@@ -86,7 +86,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
    opens My Schedule. Pink-tinted when a current/next session exists, neutral
    when empty/disconnected. Stays visible on mobile (inherits .nav-count). */
 .nav-session-pill{display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:background .18s,border-color .18s,transform .12s}
-.nav-session-pill svg{width:13px;height:13px;flex:none;stroke-width:1.8;fill:none}
+.nav-session-pill svg{width:13px;height:13px;flex:none;stroke:currentColor;stroke-width:1.8;fill:none}
 .nav-session-pill.has-session{color:var(--pink);background:rgba(239,67,179,.12);border-color:rgba(239,67,179,.35)}
 .nav-session-pill:active{transform:scale(.97)}
 .nav-session-pill .nav-session-go{width:12px;height:12px;margin-left:-1px;opacity:.7;transition:transform .18s,opacity .18s}
@@ -4232,6 +4232,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .schad-meta svg{width:12px;height:12px;flex:none;fill:none;stroke:var(--text3);stroke-width:1.7}
 .schad-chip{font-size:11px;font-weight:600;border-radius:99px;padding:3px 10px;white-space:nowrap;flex:none}
 .schad-chip.confirmed{background:var(--green-bg);color:var(--green-text)}
+.schad-chip.completed{background:var(--green);color:#fff}
 .schad-chip.noshow{background:var(--amber-bg);color:var(--amber-text)}
 .schad-chip.reschedule{background:var(--red-bg);color:var(--red-text)}
 .schad-chip.partial{background:#F3E8FF;color:#6B21A8}
@@ -8298,12 +8299,13 @@ function _schSessionKey(s){
 // Is a status string terminal (already acted on)?
 function _schIsTerminal(status){
   const c = String(status||'').toLowerCase();
-  return /confirm|no[\s-]?show|cancel|call[\s-]?off/.test(c);
+  return /confirm|complet|no[\s-]?show|cancel|call[\s-]?off/.test(c);
 }
 // Map a status string → chip/card css state. "Call-off" (and legacy
 // "Cancelled") share the red 'cancelled' class.
 function _schStatusClass(status){
   const c = String(status||'').toLowerCase();
+  if(/complet/.test(c)) return 'completed';
   if(/confirm/.test(c)) return 'confirmed';
   if(/no[\s-]?show/.test(c)) return 'noshow';
   if(/cancel|call[\s-]?off/.test(c)) return 'cancelled';
@@ -8405,8 +8407,11 @@ function renderNavSessionPill(){
   const goIcon  = '<svg class="nav-session-go" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
   if(s){
     pill.classList.add('has-session');
-    // Always lead with the clock icon in the has-session state.
-    pill.innerHTML = clkIcon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>' + goIcon;
+    // Has-session pill is the next un-confirmed session in today's queue → label
+    // it "Upcoming" with the time (falling back to the participant's first name).
+    const first = String(s.name || '').trim().split(/\s+/)[0] || '';
+    const tail = s.time ? (' · ' + s.time) : (first ? (' · ' + first) : '');
+    pill.innerHTML = clkIcon + '<span>Upcoming' + escapeHtml(tail) + '</span>' + goIcon;
   } else {
     pill.classList.remove('has-session');
     pill.innerHTML = calIcon + '<span>No sessions today</span>';
@@ -8451,8 +8456,56 @@ let _schPanelSessions = [];
    session auto-opens the next. Cleared-flag lives in sessionStorage.
 */
 const _SCH_CLEARED_KEY = 'centific_sched_begin_cleared';
+const _SCH_ACTIVE_KEY  = 'centific_sched_active_key';
 function _schGetCleared(){ try{ return sessionStorage.getItem(_SCH_CLEARED_KEY) === '1'; }catch(_){ return false; } }
 function _schSetCleared(v){ try{ if(v) sessionStorage.setItem(_SCH_CLEARED_KEY,'1'); else sessionStorage.removeItem(_SCH_CLEARED_KEY); }catch(_){} }
+function _schGetActiveKey(){ try{ return sessionStorage.getItem(_SCH_ACTIVE_KEY) || ''; }catch(_){ return ''; } }
+function _schClearActiveKey(){ try{ sessionStorage.removeItem(_SCH_ACTIVE_KEY); }catch(_){} }
+
+// The session the moderator confirmed and is cleared to run, but has NOT yet
+// completed (resolved status still "Confirmed"). Returns null once it rolls up
+// to Completed — that's what suppresses the "Begin a new session" prompt when
+// there's nothing left to run.
+function _schConfirmedUnrun(){
+  const key = _schGetActiveKey();
+  if(!key) return null;
+  const s = (_schPanelAll || []).find(x => _schSessionKey(x) === key);
+  if(!s) return null;
+  const ov = (typeof _schLoadOverrides === 'function') ? _schLoadOverrides() : {};
+  const cur = ov[key] ? ov[key].status : s.status;
+  return /confirm/i.test(cur) ? s : null;
+}
+
+// Roll the just-run scheduled session up to "Completed". Called from BOTH
+// session-complete-modal exits ("Start a New Session" and "Done for the day"),
+// since reaching that modal means all tasks were finished. Identifies the
+// session via the confirmed-active key, falling back to a lone Confirmed
+// session for today. Idempotent + safe when nothing matches.
+function _schCompleteCurrentSession(){
+  try{
+    if(typeof _schSessionKey !== 'function' || typeof _schCommitSession !== 'function') return;
+    const today = (typeof _schTodayYMD === 'function') ? _schTodayYMD() : '';
+    const ov = _schLoadOverrides();
+    let done = null;
+    const activeKey = _schGetActiveKey();
+    if(activeKey) done = (_schPanelAll || []).find(x => _schSessionKey(x) === activeKey);
+    // Fallback: exactly one Confirmed (cleared-to-run) session today.
+    if(!done){
+      const resolved = s => { const k = _schSessionKey(s); return ov[k] ? ov[k].status : s.status; };
+      const confirmedToday = (_schPanelAll || []).filter(s => s.date === today && /confirm/i.test(resolved(s)));
+      if(confirmedToday.length === 1) done = confirmedToday[0];
+    }
+    if(done){
+      const k = _schSessionKey(done);
+      const cur = ov[k] ? ov[k].status : done.status;
+      // Only a Confirmed (participant-present) session rolls up to Completed.
+      if(/confirm/i.test(cur)){
+        _schCommitSession(done, 'Completed', (ov[k] && ov[k].note) || '', { noGate:true, silent:true });
+      }
+    }
+  }catch(e){ console.warn('[Schedule] complete-current error:', e && e.message); }
+  _schClearActiveKey();   // the run is over; nothing left "cleared to run"
+}
 
 // The earliest non-terminal session scheduled for TODAY (the one to confirm),
 // resolving status via local override vs log overlay (latest-wins), or null.
@@ -8541,6 +8594,9 @@ function renderSchedReminder(){
   const esc = escapeHtml;
   const pending = _schGateSession();
   const cleared = _schGetCleared();
+  const unrun   = _schConfirmedUnrun();   // confirmed-but-not-yet-completed session, or null
+  const today   = _schTodayYMD();
+  const todaysCount = (_schPanelAll || []).filter(s => s.date === today).length;
 
   const sessLine = (s) => {
     const bits = [];
@@ -8562,18 +8618,24 @@ function renderSchedReminder(){
       +   '<button class="srp-btn calloff" onclick="schReminderToDrawer()"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M9 14l6 6M15 14l-6 6"/></svg>Call-off</button>'
       + '</div>'
       + '<div class="srp-hint">No-show &amp; Call-off open your schedule to add the required note.</div>';
-  } else if(cleared){
-    const next = pending; // if another today session is still pending, mention it after begin
+  } else if(cleared && unrun){
+    // Only prompt to begin while a confirmed session is actually waiting to run.
     pop.innerHTML =
         '<div class="srp-head"><span class="srp-eyebrow ok">Cleared to begin</span>'
       +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
       + '<div class="srp-cleared"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg><span>Status confirmed \u2014 you can start a new session.</span></div>'
       + '<div class="srp-actions"><button class="srp-btn begin" onclick="schReminderBegin()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8l5 4-5 4z"/></svg>Begin a new session</button></div>';
+  } else if(todaysCount > 0 && !pending){
+    // Had sessions today and none are still pending → all handled. No begin prompt.
+    pop.innerHTML =
+        '<div class="srp-head"><span class="srp-eyebrow ok">All done today</span>'
+      +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
+      + '<div class="srp-cleared"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg><span>All of today\u2019s sessions are complete.</span></div>';
   } else {
     pop.innerHTML =
         '<div class="srp-head"><span class="srp-eyebrow">Schedule</span>'
       +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
-      + '<div class="srp-empty">No upcoming sessions to confirm.</div>';
+      + '<div class="srp-empty">No sessions to confirm today.</div>';
   }
 }
 
@@ -8728,7 +8790,7 @@ function _schCardHtml(i){
   const terminal = _schIsTerminal(s.status);
   const esc = escapeHtml;
 
-  const chipLabel = cls === 'confirmed' ? 'Confirmed' : cls === 'noshow' ? 'No-show' : cls === 'cancelled' ? 'Call-off' : (s.status || 'Scheduled');
+  const chipLabel = cls === 'completed' ? 'Completed' : cls === 'confirmed' ? 'Confirmed' : cls === 'noshow' ? 'No-show' : cls === 'cancelled' ? 'Call-off' : (s.status || 'Scheduled');
   const chip = '<span class="sch-chip ' + cls + '">' + esc(chipLabel) + '</span>';
 
   const meta = [];
@@ -8748,7 +8810,8 @@ function _schCardHtml(i){
       : '';
     const note = pn.note
       ? '<svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>' + esc(pn.note)
-      : (cls==='confirmed' ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Participant present'
+      : (cls==='completed' ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Session completed'
+        : cls==='confirmed' ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Participant present'
         : cls==='noshow'   ? '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 9l4 4M20 9l-4 4"/></svg>Participant did not show'
         :                    '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M9 14l6 6M15 14l-6 6"/></svg>Call-off recorded');
     body = '<div class="sch-meta">' + meta.join('') + '</div>'
@@ -8979,18 +9042,25 @@ function _schCommit(i, status, note){
 
 // Commit a status directly against a session object (works whether or not the
 // drawer's _schPanelSessions array is built — e.g. from the slide reminder).
-function _schCommitSession(s, status, note){
+// opts.noGate skips clearing the begin-gate; opts.silent skips the toast.
+function _schCommitSession(s, status, note, opts){
   if(!s) return;
+  opts = opts || {};
   if(!s._key) s._key = _schSessionKey(s);
   const ov = _schLoadOverrides();
   ov[s._key] = { status: status, note: note || '', at: new Date().toISOString() };
   _schSaveOverrides(ov);
   _schWriteStatus(s, status, note);   // dormant no-op until SCHEDULE_PA_WRITE_URL is set
+  // Remember the confirmed session so finishing its checklist can flip it to Completed.
+  if(/confirm/i.test(status) && s.date === _schTodayYMD()){
+    try{ sessionStorage.setItem('centific_sched_active_key', s._key); }catch(_){}
+  }
   // Gate: confirming TODAY's session (any terminal status) clears the begin lock.
-  if(_schIsTerminal(status) && s.date === _schTodayYMD()) _schSetCleared(true);
-  // Reminder on every submitted activity (persistent callout lives on the card).
-  const _verb = status === 'Confirmed' ? 'Confirmed' : status === 'No-show' ? 'No-show' : 'Call-off';
-  showToast(_verb + ' — please update the OD & Tracker');
+  if(!opts.noGate && _schIsTerminal(status) && s.date === _schTodayYMD()) _schSetCleared(true);
+  const _verb = /complet/i.test(status) ? 'Completed'
+    : status === 'Confirmed' ? 'Confirmed'
+    : status === 'No-show' ? 'No-show' : 'Call-off';
+  if(!opts.silent) showToast(_verb + ' — please update the OD & Tracker');
   _schRenderFromCache();
   renderNavSessionPill();   // current session now terminal → pill advances to next
   _schApplyBeginGate();     // begin buttons may unlock now
@@ -10281,7 +10351,7 @@ function _schadInitials(name){
   return (parts[0][0] + (parts.length>1 ? parts[parts.length-1][0] : '')).toUpperCase();
 }
 function _schadChipLabel(cls, raw){
-  return cls==='confirmed' ? 'Confirmed' : cls==='noshow' ? 'No-show' : cls==='cancelled' ? 'Call-off' : (raw && String(raw).trim() ? raw : 'Scheduled');
+  return cls==='completed' ? 'Completed' : cls==='confirmed' ? 'Confirmed' : cls==='noshow' ? 'No-show' : cls==='cancelled' ? 'Call-off' : (raw && String(raw).trim() ? raw : 'Scheduled');
 }
 function _schadSetCount(txt){ const c=_el('schad-count'); if(c) c.textContent = txt; }
 
@@ -11981,8 +12051,10 @@ function _doStartNewSession(){
     document.getElementById('sidebar').classList.remove('hidden');
     document.getElementById('main-panel').classList.add('hidden');
   }
-  // Session finished → re-lock the begin gate and surface the NEXT scheduled
-  // session to confirm (refresh from cloud first to catch any newer status).
+  // Session finished via "Start a New Session" → roll the run-just-finished
+  // scheduled session up to Completed, then re-lock the begin gate and surface
+  // the NEXT scheduled session (if any) to confirm.
+  if(typeof _schCompleteCurrentSession === 'function') _schCompleteCurrentSession();
   if(typeof _schSetCleared === 'function'){
     _schSetCleared(false);
     setTimeout(async () => {
@@ -12867,6 +12939,11 @@ let checkoutState = {};
 function openDeviceCheckout(){
   // Close session-complete first
   document.getElementById('session-complete-overlay').classList.add('hidden');
+
+  // "Done for the day" also finishes the current scheduled session → Completed,
+  // and clears the begin gate (they're checking out).
+  if(typeof _schCompleteCurrentSession === 'function') _schCompleteCurrentSession();
+  if(typeof _schSetCleared === 'function') _schSetCleared(false);
 
   // Load devices from the confirmed inventory set (if available)
   try {
@@ -15476,6 +15553,7 @@ function openCollReminderForCurrent(){
 .sch-chip{margin-left:auto;font-size:9.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:20px;white-space:nowrap}
 .sch-chip.scheduled{background:var(--bg4);color:var(--text2)}
 .sch-chip.confirmed{background:rgba(34,197,94,.15);color:var(--green)}
+.sch-chip.completed{background:var(--green);color:#062a14}
 .sch-chip.noshow{background:rgba(245,158,11,.15);color:var(--amber)}
 .sch-chip.cancelled{background:rgba(239,68,68,.14);color:var(--red)}
 .sch-meta{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--text2)}
