@@ -9314,6 +9314,19 @@ function doLogout(opts){
   clearAutoLogout();
   currentUser = null;
   if(typeof _schResetCache === 'function') _schResetCache();   // wipe schedule state so it can't roam to the next user
+  // Close any open side panel (My Schedule, etc.) and reset the toggle state, so
+  // the next user doesn't inherit the previous user's open panel / DOM — and so
+  // their first tap re-opens fresh instead of toggling the stale panel closed.
+  try{
+    activePanel = null;
+    if(typeof PANEL_IDS !== 'undefined'){
+      PANEL_IDS.forEach(p => {
+        const pe = document.getElementById('panel-'+p); if(pe) pe.classList.remove('open');
+        const he = document.getElementById(HD_IDS[p]);   if(he) he.classList.remove('active');
+      });
+    }
+    const mc = document.getElementById('main-content'); if(mc) mc.style.display = 'block';
+  }catch(_){}
   sessionStorage.removeItem('centific_user');
   if(typeof hideCollReminderFab === 'function') hideCollReminderFab();
   // Hide nav chip
@@ -10233,6 +10246,9 @@ function _schResetCache(){
   // Tear down the reminder popover and reset the nav pill so nothing lingers.
   try{ const pop = document.getElementById('sched-reminder-pop'); if(pop) pop.remove(); }catch(_){}
   try{ const pill = document.getElementById('nav-session-pill'); if(pill){ pill.classList.remove('has-session'); pill.innerHTML=''; } }catch(_){}
+  // Clear the My Schedule panel body — otherwise the previous user's rendered
+  // cards stay in the DOM and show through if the panel is still open.
+  try{ const box = document.getElementById('schedule-list-container'); if(box) box.innerHTML=''; }catch(_){}
 }
 
 function gotoSchedAdmin(){
