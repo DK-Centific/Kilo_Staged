@@ -8068,7 +8068,9 @@ function _schToYMD(v){
   if(/^\d{1,6}(\.\d+)?$/.test(s)){
     const serial = parseFloat(s);
     if(serial > 20000 && serial < 80000){
-      const ed = new Date(Date.UTC(1899,11,30) + Math.round(serial)*86400000);
+      // Use FLOOR, not round: a datetime serial carries a time fraction, and
+      // rounding pushes any afternoon session (frac >= .5) onto the next day.
+      const ed = new Date(Date.UTC(1899,11,30) + Math.floor(serial)*86400000);
       if(!isNaN(ed)){
         return ed.getUTCFullYear()+'-'+String(ed.getUTCMonth()+1).padStart(2,'0')+'-'+String(ed.getUTCDate()).padStart(2,'0');
       }
@@ -8325,6 +8327,24 @@ function getUpcomingSessionsForMod(rows, modName, todayYMD){
     .sort((a,b) => a.date === b.date ? (toMin(a.time) - toMin(b.time)) : (a.date < b.date ? -1 : 1));
 }
 
+// Parse + filter to ALL of THIS moderator's sessions (past, today, future),
+// sorted ascending by date+time. Used for the My Schedule history view; the
+// pill/reminder/gate filter this down to TODAY themselves.
+function getAllSessionsForMod(rows, modName){
+  const wantMod = _schCanon(modName);
+  if(!wantMod) return [];
+  const toMin = t => {
+    const m = String(t||'').match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+    if(!m) return 0;
+    let h = parseInt(m[1],10) % 12; if((m[3]||'').toLowerCase()==='pm') h += 12;
+    return h*60 + parseInt(m[2],10);
+  };
+  return (rows||[])
+    .map(_schParseRow)
+    .filter(s => _schCanon(s.moderator) === wantMod && s.date)
+    .sort((a,b) => a.date === b.date ? (toMin(a.time) - toMin(b.time)) : (a.date < b.date ? -1 : 1));
+}
+
 // The name we match Schedule.PrimaryModerator against. Prefer the ModInfo
 // "OD Name" (currentUser.odName); fall back to modName so matching keeps
 // working on sessions saved before the login flow returned odName.
@@ -8337,8 +8357,10 @@ function _schMatchName(){
 // status overrides so a Confirm/No-show/Cancel advances the pill. Returns
 // null when there are no non-terminal sessions.
 function getCurrentOrNextSession(){
+  const today = _schTodayYMD();
   const ov = _schLoadOverrides();
   for(const s0 of (_schPanelAll || [])){
+    if(s0.date !== today) continue;   // pill/reminder are TODAY only
     const key = _schSessionKey(s0);
     const sid = _schCanon(s0.sessionId || '');
     const remote = sid ? (_schLogOverlay[sid] || null) : null;
@@ -8387,7 +8409,7 @@ function renderNavSessionPill(){
     pill.innerHTML = clkIcon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>' + goIcon;
   } else {
     pill.classList.remove('has-session');
-    pill.innerHTML = calIcon + '<span>No sessions</span>';
+    pill.innerHTML = calIcon + '<span>No sessions today</span>';
   }
 }
 
@@ -8399,7 +8421,11 @@ async function _schLoadForNav(){
     if(!currentUser){ renderNavSessionPill(); return; }
     if(!SCHEDULE_PA_READ_URL || !_schMatchName()){ renderNavSessionPill(); return; }  // empty pill until wired / no name
     const [rows] = await Promise.all([ _schReadRows(SCHEDULE_PA_READ_URL), _schLoadLogOverlay() ]);
-    _schPanelAll = getUpcomingSessionsForMod(rows, _schMatchName(), _schTodayYMD());
+    _schPanelAll = getAllSessionsForMod(rows, _schMatchName());
+    const _t = _schTodayYMD();
+    console.log('[Schedule] today =', _t, '| matchName =', _schMatchName(),
+      '| total', _schPanelAll.length, '| today', _schPanelAll.filter(s=>s.date===_t).length,
+      '| sample dates:', _schPanelAll.slice(0,5).map(s=>s.date).join(', '));
   }catch(e){
     console.warn('[Schedule] nav pill load error:', e && e.message);
   }
@@ -8603,8 +8629,8 @@ async function renderSchedulePanel(force){
   let rows = [];
   try{ [rows] = await Promise.all([ _schReadRows(SCHEDULE_PA_READ_URL), _schLoadLogOverlay() ]); }catch(_){ rows = []; }
   const today = _schTodayYMD();
-  _schPanelAll = getUpcomingSessionsForMod(rows, _schMatchName(), today);
-  console.log('[Schedule] panel —', _schPanelAll.length, 'upcoming session(s) for', _schMatchName());
+  _schPanelAll = getAllSessionsForMod(rows, _schMatchName());
+  console.log('[Schedule] panel —', _schPanelAll.length, 'session(s) (all dates) for', _schMatchName());
   _schRenderFromCache();
   renderNavSessionPill();   // panel data is freshest source for the pill
 }
@@ -8659,8 +8685,14 @@ function _schRenderFromCache(){
     return;
   }
 
-  const todays = [], upcoming = [];
-  _schPanelSessions.forEach((s, i) => { (s.date === today ? todays : upcoming).push(i); });
+  const todays = [], upcoming = [], past = [];
+  _schPanelSessions.forEach((s, i) => {
+    if(s.date === today) todays.push(i);
+    else if(s.date > today) upcoming.push(i);
+    else past.push(i);
+  });
+
+  const dlabel = d => new Date(d + 'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
 
   let html = '';
   if(todays.length){
@@ -8671,13 +8703,18 @@ function _schRenderFromCache(){
   if(upcoming.length){
     html += '<div class="sch-section-label">Upcoming</div>';
     let lastDate = '';
-    upcoming.forEach(i => {
+    upcoming.forEach(i => {                       // ascending (soonest first)
       const s = _schPanelSessions[i];
-      if(s.date !== lastDate){
-        lastDate = s.date;
-        const dl = new Date(s.date + 'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
-        html += '<div class="sch-date-label">' + escapeHtml(dl) + '</div>';
-      }
+      if(s.date !== lastDate){ lastDate = s.date; html += '<div class="sch-date-label">' + escapeHtml(dlabel(s.date)) + '</div>'; }
+      html += _schCardHtml(i);
+    });
+  }
+  if(past.length){
+    html += '<div class="sch-section-label">Past sessions</div>';
+    let lastDate = '';
+    past.slice().reverse().forEach(i => {         // most-recent past first
+      const s = _schPanelSessions[i];
+      if(s.date !== lastDate){ lastDate = s.date; html += '<div class="sch-date-label">' + escapeHtml(dlabel(s.date)) + '</div>'; }
       html += _schCardHtml(i);
     });
   }
