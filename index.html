@@ -89,6 +89,8 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .nav-session-pill svg{width:13px;height:13px;flex:none;stroke-width:1.8;fill:none}
 .nav-session-pill.has-session{color:var(--pink);background:rgba(239,67,179,.12);border-color:rgba(239,67,179,.35)}
 .nav-session-pill:active{transform:scale(.97)}
+.nav-session-pill .nav-session-go{width:12px;height:12px;margin-left:-1px;opacity:.7;transition:transform .18s,opacity .18s}
+.nav-session-pill:hover .nav-session-go{opacity:1;transform:translateX(2px)}
 
 /* sync badge */
 .sync-badge{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:4px 10px;border-radius:99px;border:.5px solid var(--border-strong);background:var(--bg2);white-space:nowrap;cursor:default}
@@ -4151,6 +4153,17 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 #schedule-admin-page{display:none;background:var(--bg);height:calc(100vh - 52px);overflow-y:auto;overflow-x:hidden}
 #schedule-admin-page.visible{display:block}
 .schad-body{max-width:920px;margin:0 auto;padding:20px 24px 60px}
+.schad-search-wrap{position:relative;display:flex;align-items:center}
+.schad-search-ic{position:absolute;left:10px;width:14px;height:14px;fill:none;stroke:var(--text3);stroke-width:1.8;stroke-linecap:round;pointer-events:none}
+.schad-search{font-family:var(--font);font-size:13px;color:var(--text);background:var(--input-bg);border:.5px solid var(--border-strong);border-radius:10px;padding:7px 10px 7px 30px;min-width:240px;outline:none;transition:border-color .18s,box-shadow .18s}
+.schad-search::placeholder{color:var(--text3)}
+.schad-search:focus{border-color:var(--pink);box-shadow:0 0 0 3px rgba(239,67,179,.14)}
+.schad-note{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}
+.schad-amt{font-family:var(--font-num,var(--font));font-weight:700;font-size:12px;color:#fff;background:#3a3a3c;border:.5px solid rgba(255,255,255,.14);border-radius:8px;padding:2px 8px;font-variant-numeric:tabular-nums}
+.schad-reason{font-size:12px;font-weight:600;color:var(--text2)}
+.schad-note-txt{font-size:12px;color:var(--text3);font-style:italic}
+.schad-note-txt::before{content:'\201C'}
+.schad-note-txt::after{content:'\201D'}
 .schad-count{font-size:12px;color:var(--text3);white-space:nowrap}
 /* moderator master rows */
 /* moderator accordion */
@@ -4191,7 +4204,9 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .schad-meta svg{width:12px;height:12px;flex:none;fill:none;stroke:var(--text3);stroke-width:1.7}
 .schad-chip{font-size:11px;font-weight:600;border-radius:99px;padding:3px 10px;white-space:nowrap;flex:none}
 .schad-chip.confirmed{background:var(--green-bg);color:var(--green-text)}
-.schad-chip.noshow{background:var(--red-bg);color:var(--red-text)}
+.schad-chip.noshow{background:var(--amber-bg);color:var(--amber-text)}
+.schad-chip.reschedule{background:var(--red-bg);color:var(--red-text)}
+.schad-chip.partial{background:#F3E8FF;color:#6B21A8}
 .schad-chip.cancelled{background:var(--bg3);color:var(--text3);border:.5px solid var(--border-strong)}
 .schad-chip.scheduled{background:var(--bg4);color:var(--text2)}
 /* empty / loading */
@@ -8083,10 +8098,11 @@ function _schParseRow(row){
   const fullName = String(_schGetField(row, ['ParticipantName','Participant Name','participantName','Participant','PT Name','PTName','PT','Name','FullName','Full Name','Candidate','Candidate Name','Customer','Customer Name']) || '').trim();
   const first    = fullName.split(/\s+/)[0] || '';
   const timeRaw  = _schGetField(row, ['SessionTime','Session Time','sessionTime','Time']);
-  return {
+  const o = {
     date:      _schToYMD(_schGetField(row, ['SessionDate','Session Date','sessionDate'])),
     status:    String(_schGetField(row, ['SessionStatus','Session Status','sessionStatus','Status']) || '').trim(),
-    location:  String(_schGetField(row, ['SessionType','Session Type','sessionType']) || '').trim(),
+    note:      String(_schGetField(row, ['StatusNote','Status Note','statusNote','StatusComment','Status Comment']) || '').trim(),
+    location:  String(_schGetField(row, ['Location','location','SessionType','Session Type','sessionType']) || '').trim(),
     name:      fullName,
     firstName: first,
     email:     String(_schGetField(row, ['Email','email','ParticipantEmail']) || '').trim(),
@@ -8095,6 +8111,66 @@ function _schParseRow(row){
     time:      _schFormatTime(timeRaw),   // Excel serial/day-fraction → "7:50 AM"
     _raw:      row
   };
+  // Case-insensitive search haystack: name, email, phone, time, date (+ a long
+  // human label so "monday"/"july"/"29" all match), location, moderator.
+  let _dl = '';
+  if(o.date){ try{ _dl = new Date(o.date + 'T00:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'}); }catch(_){} }
+  o._search = [o.name, o.email, o.phone, o.time, o.date, _dl, o.location, o.moderator].join(' ').toLowerCase();
+  return o;
+}
+
+// Encode a status comment as compact JSON for the StatusNote column. Empty
+// pieces are kept as '' so the parsed shape is always predictable.
+function _schMakeNote(obj){
+  obj = obj || {};
+  return JSON.stringify({
+    v: 1,
+    reason: String(obj.reason || '').trim(),   // 'Reschedule' | 'Partial Payment' | ''
+    band:   String(obj.band   || '').trim(),   // 'Less than 1 hr' | '2 hrs' | ''
+    amount: String(obj.amount || '').trim(),   // '$25' | '$60' | '$125' | ''
+    note:   String(obj.note   || '').trim()    // free-text moderator note
+  });
+}
+
+// Decode a StatusNote value into {reason, band, amount, note, raw}. Tolerant of
+// BOTH the new JSON format AND legacy plain text written before this change
+// ("Partial Payment - Less than 1 hr - $25 — left early" / "Reschedule — note" /
+// a bare note), so existing rows still render correctly. Pure → harness-testable.
+function _schParseNote(raw){
+  const out = { reason:'', band:'', amount:'', note:'', raw: String(raw == null ? '' : raw) };
+  const s = out.raw.trim();
+  if(!s) return out;
+  if(s.charAt(0) === '{'){                          // new JSON format
+    try{
+      const o = JSON.parse(s);
+      if(o && typeof o === 'object'){
+        out.reason = String(o.reason || '').trim();
+        out.band   = String(o.band   || '').trim();
+        out.amount = String(o.amount || '').trim();
+        out.note   = String(o.note   || '').trim();
+        return out;
+      }
+    }catch(_){ /* malformed JSON → fall through to legacy parsing */ }
+  }
+  // Legacy plain text. Old builder joined "<subType> — <note>" with a spaced em-dash.
+  let head = s, tail = '';
+  const parts = s.split(/\s+—\s+/);
+  if(parts.length >= 2){ head = parts[0].trim(); tail = parts.slice(1).join(' — ').trim(); }
+  else if(!/^(reschedule|partial payment)/i.test(s)){ out.note = s; return out; }  // bare note
+  if(/^partial payment/i.test(head)){
+    out.reason = 'Partial Payment';
+    const tier = head.replace(/^partial payment\s*-\s*/i, '').trim();   // "Less than 1 hr - $25"
+    const m = tier.match(/^(.*?)\s*-\s*(\$[\d.,]+)\s*$/);
+    if(m){ out.band = m[1].trim(); out.amount = m[2].trim(); }
+    else if(tier){ out.band = tier; }
+    out.note = tail;
+  } else if(/^reschedule/i.test(head)){
+    out.reason = 'Reschedule';
+    out.note = tail;
+  } else {
+    out.note = s;
+  }
+  return out;
 }
 
 // Filter parsed rows to those for THIS moderator on the given YMD date.
@@ -8223,10 +8299,11 @@ function renderNavSessionPill(){
   const s = getCurrentOrNextSession();
   const calIcon = '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>';
   const clkIcon = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+  const goIcon  = '<svg class="nav-session-go" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
   if(s){
     pill.classList.add('has-session');
     const icon = s.time ? clkIcon : calIcon;
-    pill.innerHTML = icon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>';
+    pill.innerHTML = icon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>' + goIcon;
   } else {
     pill.classList.remove('has-session');
     pill.innerHTML = calIcon + '<span>No sessions</span>';
@@ -8346,12 +8423,21 @@ function _schCardHtml(i){
 
   let body;
   if(terminal){
-    const note = s._note
-      ? '<svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>' + esc(s._note)
+    // Parse the structured note (override wins; else server StatusNote). Never
+    // render the raw JSON — pull reason/band/amount/note out for display.
+    const pn = _schParseNote(s._note || s.note || '');
+    const reasonTxt = pn.reason ? (pn.reason + (pn.band ? ' \u00b7 ' + pn.band : '')) : '';
+    const amtPill = pn.amount ? '<span class="sch-amt">' + esc(pn.amount) + '</span>' : '';
+    const resLine = (reasonTxt || amtPill)
+      ? '<div class="sch-resline">' + (reasonTxt ? '<span class="sch-reason">' + esc(reasonTxt) + '</span>' : '') + amtPill + '</div>'
+      : '';
+    const note = pn.note
+      ? '<svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>' + esc(pn.note)
       : (cls==='confirmed' ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Participant present'
         : cls==='noshow'   ? '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 9l4 4M20 9l-4 4"/></svg>Participant did not show'
         :                    '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M9 14l6 6M15 14l-6 6"/></svg>Call-off recorded');
     body = '<div class="sch-meta">' + meta.join('') + '</div>'
+         + resLine
          + '<div class="sch-doneline">' + note + '</div>'
          + '<div class="sch-reminder"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><span>Please update the <strong>OD</strong> and the <strong>Tracker</strong> for this session.</span></div>'
          + (s._overridden ? '<button class="sch-undo" onclick="schUndo(' + i + ')"><svg viewBox="0 0 24 24"><path d="M9 14l-4-4 4-4"/><path d="M5 10h7a5 5 0 0 1 0 10h-1"/></svg>Undo</button>' : '');
@@ -8369,6 +8455,15 @@ function _schCardHtml(i){
       +       '<div class="sch-subrow">'
       +         '<button class="sch-subbtn" onclick="schCalloffType(' + i + ',\'Reschedule\')"><svg viewBox="0 0 24 24"><path d="M4 8a8 8 0 0 1 14-4M20 4v4h-4"/><path d="M20 16a8 8 0 0 1-14 4M4 20v-4h4"/></svg>Reschedule</button>'
       +         '<button class="sch-subbtn" onclick="schCalloffType(' + i + ',\'Partial Payment\')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.2c-.6-.7-1.6-1-2.5-1-1.4 0-2.5.8-2.5 2s1.1 1.7 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2c-.9 0-1.9-.3-2.5-1"/></svg>Partial Payment</button>'
+      +       '</div>'
+      +       '<div class="sch-expand-actions"><button class="sch-back" onclick="schBack(' + i + ')">Back</button></div>'
+      +     '</div>'
+      +     '<div class="sch-tiers" id="sch-tiers-' + i + '" style="display:none">'
+      +       '<div class="sch-comment-label cancel">Partial payment amount <span class="req">*</span></div>'
+      +       '<div class="sch-subrow tiers">'
+      +         '<button class="sch-subbtn tier" onclick="schPartialTier(' + i + ',\'Less than 1 hr - $25\')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Less than 1 hr<b>$25</b></button>'
+      +         '<button class="sch-subbtn tier" onclick="schPartialTier(' + i + ',\'Less than 2 hrs - $60\')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Less than 2 hrs<b>$60</b></button>'
+      +         '<button class="sch-subbtn tier" onclick="schPartialTier(' + i + ',\'2 hrs - $125\')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>2 hrs<b>$125</b></button>'
       +       '</div>'
       +       '<div class="sch-expand-actions"><button class="sch-back" onclick="schBack(' + i + ')">Back</button></div>'
       +     '</div>'
@@ -8395,20 +8490,25 @@ function _schCardHtml(i){
 }
 
 // Confirm = one tap. No-show = open the required-note field directly.
-// Call-off = open a sub-choice (Reschedule / Partial Payment) FIRST, then the
-// required note. The expand has two stages: #sch-choose-i and #sch-note-i.
+// Call-off = open a sub-choice (Reschedule / Partial Payment) FIRST. Reschedule
+// goes straight to the note; Partial Payment inserts a tier-amount picker, then
+// the note. Stages: 'choose' → ('tiers') → 'note', tracked on exp.dataset.stage.
 function schAction(i, kind){
   if(kind === 'confirm'){ _schCommit(i, 'Confirmed', ''); return; }
   const exp = document.getElementById('sch-exp-' + i);
   const choose = document.getElementById('sch-choose-' + i);
+  const tiers = document.getElementById('sch-tiers-' + i);
   const note = document.getElementById('sch-note-' + i);
   if(!exp) return;
   exp.dataset.kind = kind;
   exp.dataset.subtype = '';
+  exp.dataset.subbase = '';
+  if(tiers) tiers.style.display = 'none';
   if(kind === 'calloff'){
     // Stage 1: pick a call-off reason before writing the note.
     if(note) note.style.display = 'none';
     if(choose) choose.style.display = '';
+    exp.dataset.stage = 'choose';
     exp.classList.add('open');
     return;
   }
@@ -8418,23 +8518,47 @@ function schAction(i, kind){
   exp.classList.add('open');
 }
 
-// A moderator picked a call-off reason → advance to the required-note stage.
+// A moderator picked a call-off reason. Reschedule → note. Partial Payment →
+// tier-amount picker first (the chosen amount is folded into the sub-type).
 function schCalloffType(i, subType){
   const exp = document.getElementById('sch-exp-' + i);
   const choose = document.getElementById('sch-choose-' + i);
+  const tiers = document.getElementById('sch-tiers-' + i);
   if(!exp) return;
+  exp.dataset.subbase = subType;
+  if(/partial payment/i.test(subType)){
+    if(choose) choose.style.display = 'none';
+    if(tiers) tiers.style.display = '';
+    exp.dataset.stage = 'tiers';
+    return;
+  }
   exp.dataset.subtype = subType;
   if(choose) choose.style.display = 'none';
   _schShowNoteStage(i, 'calloff', subType);
 }
 
+// A Partial Payment tier was picked → fold the amount into the sub-type, advance to note.
+function schPartialTier(i, tier){
+  const exp = document.getElementById('sch-exp-' + i);
+  const tiers = document.getElementById('sch-tiers-' + i);
+  if(!exp) return;
+  const full = 'Partial Payment - ' + tier;
+  exp.dataset.subtype = full;
+  if(tiers) tiers.style.display = 'none';
+  _schShowNoteStage(i, 'calloff', full);
+}
+
 // Configure + reveal the note textarea for either a no-show or a call-off sub-type.
 function _schShowNoteStage(i, kind, subType){
+  const exp = document.getElementById('sch-exp-' + i);
   const note = document.getElementById('sch-note-' + i);
+  const tiers = document.getElementById('sch-tiers-' + i);
   const label = document.getElementById('sch-explabel-' + i);
   const ta = document.getElementById('sch-ta-' + i);
   const submit = document.getElementById('sch-submit-' + i);
   if(!note || !label || !ta || !submit) return;
+  if(tiers) tiers.style.display = 'none';
+  if(exp) exp.dataset.stage = 'note';
   note.style.display = '';
   const isNoShow = kind === 'noshow';
   label.className = 'sch-comment-label ' + (isNoShow ? 'noshow' : 'cancel');
@@ -8460,26 +8584,44 @@ function schTextInput(i){
   submit.disabled = ta.value.trim().length === 0;
 }
 
-// Back is context-aware: from a call-off NOTE stage it steps back to the
-// sub-choices; otherwise it closes the whole expand.
+// Back is stage-aware: note → (tiers if Partial Payment, else choose) → close.
+// No-show notes have no sub-choice, so Back closes the expand outright.
 function schBack(i){
   const exp = document.getElementById('sch-exp-' + i);
   const choose = document.getElementById('sch-choose-' + i);
+  const tiers = document.getElementById('sch-tiers-' + i);
   const note = document.getElementById('sch-note-' + i);
   const ta = document.getElementById('sch-ta-' + i);
   if(!exp) return;
-  if(exp.dataset.kind === 'calloff' && note && note.style.display !== 'none'){
+  const stage = exp.dataset.stage || '';
+  if(stage === 'note' && exp.dataset.kind === 'calloff'){
     if(note) note.style.display = 'none';
-    if(choose) choose.style.display = '';
-    exp.dataset.subtype = '';
     if(ta) ta.value = '';
+    exp.dataset.subtype = '';
+    if(/partial payment/i.test(exp.dataset.subbase || '')){
+      if(tiers) tiers.style.display = '';      // back to the amount picker
+      exp.dataset.stage = 'tiers';
+    } else {
+      if(choose) choose.style.display = '';    // back to the reason picker
+      exp.dataset.subbase = '';
+      exp.dataset.stage = 'choose';
+    }
     return;
   }
+  if(stage === 'tiers'){
+    if(tiers) tiers.style.display = 'none';
+    if(choose) choose.style.display = '';
+    exp.dataset.subbase = '';
+    exp.dataset.stage = 'choose';
+    return;
+  }
+  // choose stage (or a no-show note) → close the whole expand.
   exp.classList.remove('open');
   if(choose) choose.style.display = 'none';
+  if(tiers) tiers.style.display = 'none';
   if(note) note.style.display = 'none';
   if(ta) ta.value = '';
-  exp.dataset.kind = ''; exp.dataset.subtype = '';
+  exp.dataset.kind = ''; exp.dataset.subtype = ''; exp.dataset.subbase = ''; exp.dataset.stage = '';
 }
 
 function schSubmit(i){
@@ -8489,10 +8631,18 @@ function schSubmit(i){
   const typed = ta.value.trim();
   if(!typed) return;  // guard — submit is disabled, but double-check
   if(exp.dataset.kind === 'calloff'){
-    const sub = exp.dataset.subtype || '';
-    _schCommit(i, 'Call-off', sub ? (sub + ' — ' + typed) : typed);
+    const reason = exp.dataset.subbase || '';        // 'Reschedule' | 'Partial Payment'
+    let band = '', amount = '';
+    if(/partial payment/i.test(reason)){
+      // dataset.subtype holds "Partial Payment - <band> - <$amount>"; split it back out.
+      const tier = (exp.dataset.subtype || '').replace(/^partial payment\s*-\s*/i, '').trim();
+      const m = tier.match(/^(.*?)\s*-\s*(\$[\d.,]+)\s*$/);
+      if(m){ band = m[1].trim(); amount = m[2].trim(); }
+      else if(tier){ band = tier; }
+    }
+    _schCommit(i, 'Call-off', _schMakeNote({ reason: reason, band: band, amount: amount, note: typed }));
   } else {
-    _schCommit(i, 'No-show', typed);
+    _schCommit(i, 'No-show', _schMakeNote({ note: typed }));
   }
 }
 
@@ -9660,7 +9810,7 @@ function dashBack(){
 */
 let _schAdminAll = [];                 // parsed rows for all moderators (last fetch)
 let _schAdminSelectedMod = null;       // canon key of the drilled-into moderator, or null = master
-const _schAdminFilter = { window: 'today', status: 'all', location: 'all' };  // from/to read from the inputs
+const _schAdminFilter = { window: 'today', status: 'all', location: 'all', q: '' };  // from/to read from the inputs
 
 function gotoSchedAdmin(){
   if(!(currentUser && currentUser.isAdmin)) return;   // Scheduling is admin-only
@@ -9711,6 +9861,12 @@ function schadFiltersChanged(){
   renderSchedAdmin();
 }
 
+// Live search box — filters as you type (case-insensitive).
+function schadSearchInput(){
+  const el=_el('schad-q'); if(el) _schAdminFilter.q = el.value;
+  renderSchedAdmin();
+}
+
 // Fetch + parse all rows, then render. force is accepted for the button.
 async function loadSchedAdmin(force){
   const body=_el('schad-body'); if(!body) return;
@@ -9755,11 +9911,17 @@ function _schadFiltered(){
   const week = f.window==='week' ? _schWeekBounds(today) : null;
   const lo = (_el('schad-from')||{}).value || '';
   const hi = (_el('schad-to')||{}).value || '';
+  const q = String(f.q||'').trim().toLowerCase();
   return _schAdminAll.filter(s => {
     // status filter
     if(f.status !== 'all' && _schStatusClass(s.status) !== f.status) return false;
     // location filter
     if(f.location !== 'all' && _schCanon(s.location) !== _schCanon(f.location)) return false;
+    // text search (case-insensitive) across name/email/phone/time/date/location/moderator
+    if(q && !(s._search || '').includes(q)) return false;
+    // An active search looks across ALL dates (so name/date/time lookups aren't
+    // hidden by the current time window). Status + location still apply above.
+    if(q) return true;
     // window filter
     if(f.window === 'all') return true;
     if(!s.date) return false;                      // dated windows exclude undated rows
@@ -9818,10 +9980,23 @@ function _schadPartsHtml(sessions){
     if(s.location) meta.push('<span><svg viewBox="0 0 24 24"><path d="M12 21s-7-5.6-7-11a7 7 0 0 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>' + escapeHtml(s.location) + '</span>');
     if(s.email)    meta.push('<span><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>' + escapeHtml(s.email) + '</span>');
     if(s.phone)    meta.push('<span><svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L16 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>' + escapeHtml(s.phone) + '</span>');
+    // Parsed status comment (reason / partial-payment amount / note) from StatusNote.
+    const pn = _schParseNote(s.note || '');
+    const reasonTxt = pn.reason ? (pn.reason + (pn.band ? ' \u00b7 ' + pn.band : '')) : '';
+    const nb = [];
+    if(pn.amount)  nb.push('<span class="schad-amt">' + escapeHtml(pn.amount) + '</span>');
+    if(reasonTxt)  nb.push('<span class="schad-reason">' + escapeHtml(reasonTxt) + '</span>');
+    if(pn.note)    nb.push('<span class="schad-note-txt">' + escapeHtml(pn.note) + '</span>');
+    const noteLine = nb.length ? '<div class="schad-note">' + nb.join('') + '</div>' : '';
+    // Call-off splits by sub-reason for color: Partial Payment → purple, else (Reschedule
+    // or unspecified) → red. Label still reads "Call-off" via the original class.
+    let chipCls = cls;
+    if(cls === 'cancelled') chipCls = /partial payment/i.test(pn.reason) ? 'partial' : 'reschedule';
     html += '<div class="schad-part">'
       + '<div class="schad-part-main"><div class="schad-part-name">' + escapeHtml(s.name || 'Unnamed participant') + '</div>'
-      + '<div class="schad-meta">' + (meta.join('') || '<span style="color:var(--text3)">No contact info on file</span>') + '</div></div>'
-      + '<span class="schad-chip ' + cls + '">' + escapeHtml(_schadChipLabel(cls, s.status)) + '</span>'
+      + '<div class="schad-meta">' + (meta.join('') || '<span style="color:var(--text3)">No contact info on file</span>') + '</div>'
+      + noteLine + '</div>'
+      + '<span class="schad-chip ' + chipCls + '">' + escapeHtml(_schadChipLabel(cls, s.status)) + '</span>'
       + '</div>';
   });
   return html;
@@ -9840,7 +10015,7 @@ function _schadRenderMaster(body, filtered){
   _schadSetCount(keys.length + ' moderator' + (keys.length===1?'':'s') + ' \u00b7 ' + filtered.length + ' session' + (filtered.length===1?'':'s'));
 
   if(keys.length === 0){
-    body.innerHTML = _schadEmpty('No sessions match', 'Try a wider time window, another location, or a different status.');
+    body.innerHTML = _schadEmpty('No sessions match', 'Try a wider time window, another location, a different status, or clearing the search.');
     return;
   }
 
@@ -14569,6 +14744,11 @@ function openCollReminderForCurrent(){
       <button class="page-toggle-btn" id="schad-win-all" onclick="schadSetWindow('all')">All</button>
     </div>
 
+    <div class="schad-search-wrap">
+      <svg class="schad-search-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input type="search" class="schad-search" id="schad-q" placeholder="Search name, email, phone, date, time, moderator…" oninput="schadSearchInput()" autocomplete="off"/>
+    </div>
+
     <span class="dash-filter-label" id="schad-from-label" style="display:none">From</span>
     <input type="date" class="dash-select dash-date-input" id="schad-from" style="display:none" onchange="schadFiltersChanged()"/>
     <span class="dash-filter-label" id="schad-to-label" style="display:none">To</span>
@@ -14972,6 +15152,12 @@ function openCollReminderForCurrent(){
 .sch-subbtn:hover{background:rgba(239,68,68,.16)}
 .sch-subbtn:active{transform:scale(.98)}
 .sch-subbtn svg{width:14px;height:14px;flex:none;fill:none;stroke:var(--red);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sch-subrow.tiers{flex-wrap:wrap}
+.sch-subbtn.tier{flex:1 1 100%;justify-content:flex-start;gap:8px;font-weight:500}
+.sch-subbtn.tier b{margin-left:auto;font-weight:700;color:var(--red);font-variant-numeric:tabular-nums}
+.sch-resline{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:2px 0 4px}
+.sch-reason{font-size:12.5px;font-weight:600;color:var(--text2)}
+.sch-amt{margin-left:auto;font-family:var(--font-num,var(--font));font-weight:700;font-size:12.5px;color:var(--pink);background:rgba(239,67,179,.12);border:.5px solid rgba(239,67,179,.4);border-radius:8px;padding:2px 9px;font-variant-numeric:tabular-nums}
 /* Persistent "update the OD & Tracker" reminder on every acted card */
 .sch-reminder{display:flex;align-items:flex-start;gap:8px;margin-top:10px;background:rgba(252,208,48,.10);border:.5px solid rgba(252,208,48,.30);border-radius:10px;padding:9px 11px}
 .sch-reminder svg{width:15px;height:15px;flex:none;fill:none;stroke:#fcd030;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
