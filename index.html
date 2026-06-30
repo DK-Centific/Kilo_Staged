@@ -91,6 +91,34 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .nav-session-pill:active{transform:scale(.97)}
 .nav-session-pill .nav-session-go{width:12px;height:12px;margin-left:-1px;opacity:.7;transition:transform .18s,opacity .18s}
 .nav-session-pill:hover .nav-session-go{opacity:1;transform:translateX(2px)}
+/* Slide reminder popover (anchored under the session pill) */
+.sched-reminder-pop{position:fixed;z-index:320;width:320px;background:var(--bg2);border:.5px solid var(--border-strong);border-radius:16px;box-shadow:var(--shadow-md);padding:14px 16px 16px;transform-origin:top right;transform:translateY(-10px) scale(.96);opacity:0;pointer-events:none;transition:transform .26s cubic-bezier(.34,1.2,.64,1),opacity .2s ease}
+.sched-reminder-pop.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto}
+.srp-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.srp-eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--pink)}
+.srp-eyebrow.ok{color:var(--green)}
+.srp-x{width:24px;height:24px;border:none;background:none;color:var(--text3);cursor:pointer;border-radius:8px;display:flex;align-items:center;justify-content:center}
+.srp-x:hover{background:var(--bg4);color:var(--text)}
+.srp-x svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.srp-name{font-size:16px;font-weight:600;letter-spacing:-.02em;color:var(--text)}
+.srp-metarow{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px}
+.srp-meta{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--text2)}
+.srp-meta svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.srp-note{font-size:12.5px;color:var(--text2);margin:10px 0 12px;line-height:1.45}
+.srp-actions{display:flex;gap:8px}
+.srp-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-family:var(--font);font-size:12.5px;font-weight:600;border-radius:10px;padding:9px 6px;cursor:pointer;border:.5px solid transparent;transition:transform .12s,background .18s}
+.srp-btn:active{transform:scale(.97)}
+.srp-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.srp-btn.confirm,.srp-btn.begin{background:var(--pink);color:#fff}
+.srp-btn.confirm:hover,.srp-btn.begin:hover{background:var(--pink-dim,#c4359a)}
+.srp-btn.noshow,.srp-btn.calloff{background:var(--bg3);color:var(--text2);border-color:var(--border-strong)}
+.srp-btn.noshow:hover,.srp-btn.calloff:hover{background:var(--bg4);color:var(--text)}
+.srp-hint{font-size:11px;color:var(--text3);margin-top:9px;line-height:1.4}
+.srp-cleared{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text);margin:6px 0 12px;line-height:1.4}
+.srp-cleared svg{width:18px;height:18px;flex:none;fill:none;stroke:var(--green);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.srp-empty{font-size:13px;color:var(--text2);padding:4px 0 2px}
+/* Begin-session gate — locked look (click still routes to the reminder) */
+.begin-session-btn.gate-locked,.sidebar-begin-pill.gate-locked{opacity:.5;cursor:not-allowed}
 
 /* sync badge */
 .sync-badge{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:4px 10px;border-radius:99px;border:.5px solid var(--border-strong);background:var(--bg2);white-space:nowrap;cursor:default}
@@ -6221,7 +6249,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-prog-bar"><div class="nav-prog-fill" id="nav-fill" style="width:0%"></div></div>
       <span style="font-size:11px;color:var(--text3)" id="nav-label">0/14</span>
     </div>
-    <span class="nav-count nav-session-pill" id="nav-session-pill" role="button" tabindex="0" title="View your schedule" onclick="openPanel('schedule')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPanel('schedule');}">No sessions</span>
+    <span class="nav-count nav-session-pill" id="nav-session-pill" role="button" tabindex="0" title="Your upcoming session" onclick="toggleSchedReminder()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSchedReminder();}">No sessions</span>
     <div class="nav-user-chip" id="nav-user-chip" style="display:none">
       <div class="nav-user-avatar" id="nav-user-avatar">?</div>
       <span class="nav-user-name" id="nav-user-name"></span>
@@ -7195,6 +7223,7 @@ function renderSidebar(){
     item.addEventListener('click',()=>openTask(i));
     el.appendChild(item);
   });
+  if(typeof _schApplyBeginGate === 'function') _schApplyBeginGate();
 }
 
 function quickCheck(e,i){
@@ -8354,8 +8383,8 @@ function renderNavSessionPill(){
   const goIcon  = '<svg class="nav-session-go" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
   if(s){
     pill.classList.add('has-session');
-    const icon = s.time ? clkIcon : calIcon;
-    pill.innerHTML = icon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>' + goIcon;
+    // Always lead with the clock icon in the has-session state.
+    pill.innerHTML = clkIcon + '<span>' + escapeHtml(_schNavLabel(s)) + '</span>' + goIcon;
   } else {
     pill.classList.remove('has-session');
     pill.innerHTML = calIcon + '<span>No sessions</span>';
@@ -8375,6 +8404,7 @@ async function _schLoadForNav(){
     console.warn('[Schedule] nav pill load error:', e && e.message);
   }
   renderNavSessionPill();
+  _schApplyBeginGate();   // begin buttons reflect the (now-loaded) gate state
 }
 
 // Cache of the last fetched+filtered sessions (pre-override) so action
@@ -8382,6 +8412,183 @@ async function _schLoadForNav(){
 let _schPanelAll = [];
 // Render-order array WITH overrides applied; handlers index into this.
 let _schPanelSessions = [];
+
+/* =====================================================================
+   BEGIN-SESSION GATE + SLIDE REMINDER (moderator workflow)
+   =====================================================================
+   When a moderator has an unconfirmed scheduled session for TODAY, the
+   "Begin a new session" buttons are locked until they confirm that session's
+   status. A reminder slides down from the nav pill to do the confirming. The
+   gate clears on confirm and re-locks when a checklist session finishes (so the
+   next session must be confirmed). The initial slide is fired ONCE after the
+   Device Set is confirmed; thereafter the pill re-invokes it and finishing a
+   session auto-opens the next. Cleared-flag lives in sessionStorage.
+*/
+const _SCH_CLEARED_KEY = 'centific_sched_begin_cleared';
+function _schGetCleared(){ try{ return sessionStorage.getItem(_SCH_CLEARED_KEY) === '1'; }catch(_){ return false; } }
+function _schSetCleared(v){ try{ if(v) sessionStorage.setItem(_SCH_CLEARED_KEY,'1'); else sessionStorage.removeItem(_SCH_CLEARED_KEY); }catch(_){} }
+
+// The earliest non-terminal session scheduled for TODAY (the one to confirm),
+// resolving status via local override vs log overlay (latest-wins), or null.
+function _schGateSession(){
+  const today = _schTodayYMD();
+  const ov = (typeof _schLoadOverrides === 'function') ? _schLoadOverrides() : {};
+  for(const s0 of (_schPanelAll || [])){
+    if(s0.date !== today) continue;
+    const key = _schSessionKey(s0);
+    const sid = _schCanon(s0.sessionId || '');
+    const remote = sid ? (_schLogOverlay[sid] || null) : null;
+    const local  = ov[key] || null;
+    let status = s0.status;
+    if(local && remote){ status = ((Date.parse(local.at)||0) >= (remote._epoch||0)) ? local.status : remote.status; }
+    else if(local){ status = local.status; }
+    else if(remote){ status = remote.status; }
+    if(!_schIsTerminal(status)) return s0;
+  }
+  return null;
+}
+
+// Begin locked when: not already mid-session, schedule is wired, there's an
+// unconfirmed TODAY session, and the gate hasn't been cleared this cycle.
+function _schBeginLocked(){
+  if(typeof isSessionStarted === 'function' && isSessionStarted()) return false;
+  if(currentUser && currentUser.isAdmin) return false;
+  if(!SCHEDULE_PA_READ_URL) return false;
+  if(!_schGateSession()) return false;
+  return !_schGetCleared();
+}
+
+// Toggle the locked look on every "Begin a new session" entry point. We do NOT
+// use the disabled attribute (it would swallow the click) — the click still
+// fires and openPrereqModal()'s guard surfaces the reminder instead.
+function _schApplyBeginGate(){
+  const locked = _schBeginLocked();
+  document.querySelectorAll('.begin-session-btn, .sidebar-begin-pill').forEach(el => {
+    if(el.classList.contains('sidebar-begin-pill') && el.classList.contains('done')) {
+      el.classList.remove('gate-locked');   // active session pill (restart) never dimmed
+    } else {
+      el.classList.toggle('gate-locked', locked);
+    }
+  });
+}
+
+// ── Slide reminder popover (anchored under the nav pill) ──
+function _schEnsureReminderEl(){
+  let pop = document.getElementById('sched-reminder-pop');
+  if(pop) return pop;
+  pop = document.createElement('div');
+  pop.id = 'sched-reminder-pop';
+  pop.className = 'sched-reminder-pop';
+  document.body.appendChild(pop);
+  // Outside-click closes (but a click on the pill is handled by its own toggle).
+  document.addEventListener('click', (e) => {
+    if(!pop.classList.contains('open')) return;
+    const pill = document.getElementById('nav-session-pill');
+    if(pop.contains(e.target)) return;
+    if(pill && pill.contains(e.target)) return;
+    closeSchedReminder();
+  });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && pop.classList.contains('open')) closeSchedReminder(); });
+  window.addEventListener('resize', () => { if(pop.classList.contains('open')) _schPositionReminder(); });
+  return pop;
+}
+
+function _schPositionReminder(){
+  const pop = document.getElementById('sched-reminder-pop');
+  const pill = document.getElementById('nav-session-pill');
+  if(!pop || !pill) return;
+  const r = pill.getBoundingClientRect();
+  if(window.innerWidth <= 600){
+    // Mobile: full-width sheet under the nav.
+    pop.style.left = '10px'; pop.style.right = '10px'; pop.style.width = 'auto';
+    pop.style.top = (r.bottom + 8) + 'px';
+  } else {
+    pop.style.right = Math.max(10, (window.innerWidth - r.right)) + 'px';
+    pop.style.left = 'auto'; pop.style.width = '320px';
+    pop.style.top = (r.bottom + 8) + 'px';
+  }
+}
+
+function renderSchedReminder(){
+  const pop = document.getElementById('sched-reminder-pop');
+  if(!pop) return;
+  const esc = escapeHtml;
+  const pending = _schGateSession();
+  const cleared = _schGetCleared();
+
+  const sessLine = (s) => {
+    const bits = [];
+    if(s.time)     bits.push('<span class="srp-meta"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>' + esc(s.time) + '</span>');
+    if(s.location) bits.push('<span class="srp-meta"><svg viewBox="0 0 24 24"><path d="M12 21s-7-5.6-7-11a7 7 0 0 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>' + esc(s.location) + '</span>');
+    return '<div class="srp-name">' + esc(s.name || 'Participant') + '</div>'
+         + (bits.length ? '<div class="srp-metarow">' + bits.join('') + '</div>' : '');
+  };
+
+  if(pending && !cleared){
+    pop.innerHTML =
+        '<div class="srp-head"><span class="srp-eyebrow">Upcoming session</span>'
+      +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
+      + sessLine(pending)
+      + '<div class="srp-note">Confirm this session\u2019s status to begin a new session.</div>'
+      + '<div class="srp-actions">'
+      +   '<button class="srp-btn confirm" onclick="schReminderConfirm()"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Confirm</button>'
+      +   '<button class="srp-btn noshow" onclick="schReminderToDrawer()"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 9l4 4M20 9l-4 4"/></svg>No-show</button>'
+      +   '<button class="srp-btn calloff" onclick="schReminderToDrawer()"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M9 14l6 6M15 14l-6 6"/></svg>Call-off</button>'
+      + '</div>'
+      + '<div class="srp-hint">No-show &amp; Call-off open your schedule to add the required note.</div>';
+  } else if(cleared){
+    const next = pending; // if another today session is still pending, mention it after begin
+    pop.innerHTML =
+        '<div class="srp-head"><span class="srp-eyebrow ok">Cleared to begin</span>'
+      +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
+      + '<div class="srp-cleared"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg><span>Status confirmed \u2014 you can start a new session.</span></div>'
+      + '<div class="srp-actions"><button class="srp-btn begin" onclick="schReminderBegin()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8l5 4-5 4z"/></svg>Begin a new session</button></div>';
+  } else {
+    pop.innerHTML =
+        '<div class="srp-head"><span class="srp-eyebrow">Schedule</span>'
+      +   '<button class="srp-x" onclick="closeSchedReminder()" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
+      + '<div class="srp-empty">No upcoming sessions to confirm.</div>';
+  }
+}
+
+function openSchedReminder(){
+  const pop = _schEnsureReminderEl();
+  renderSchedReminder();
+  _schPositionReminder();
+  requestAnimationFrame(() => pop.classList.add('open'));
+}
+function closeSchedReminder(){
+  const pop = document.getElementById('sched-reminder-pop');
+  if(pop) pop.classList.remove('open');
+}
+function toggleSchedReminder(){
+  const pop = document.getElementById('sched-reminder-pop');
+  if(pop && pop.classList.contains('open')) closeSchedReminder();
+  else openSchedReminder();
+}
+
+// Reminder action handlers.
+function schReminderConfirm(){
+  const s = _schGateSession();
+  if(s){ _schCommitSession(s, 'Confirmed', ''); }   // one-tap; sets cleared + refreshes popover
+}
+function schReminderToDrawer(){
+  closeSchedReminder();
+  if(typeof openPanel === 'function') openPanel('schedule');  // full No-show / Call-off note flow lives here
+}
+function schReminderBegin(){
+  closeSchedReminder();
+  if(typeof openPrereqModal === 'function') openPrereqModal();
+}
+
+// Ensure schedule data is loaded, sync the gate, and slide the reminder open
+// only if there's actually a session to confirm. Used by the device-set hook.
+async function _schEnsureLoadedThenOpenReminder(){
+  if(!_schPanelAll || !_schPanelAll.length){ try{ await _schLoadForNav(); }catch(_){} }
+  _schApplyBeginGate();
+  if(_schGateSession()) openSchedReminder();
+}
+
 
 // Fetch from the read flow, filter, cache, render. force is accepted for
 // symmetry with the refresh button (we always re-fetch on open anyway).
@@ -8730,15 +8937,27 @@ function schUndo(i){
 // Persist a status change: local override (always) + server write (when wired).
 function _schCommit(i, status, note){
   const s = _schPanelSessions[i]; if(!s) return;
+  _schCommitSession(s, status, note);
+}
+
+// Commit a status directly against a session object (works whether or not the
+// drawer's _schPanelSessions array is built — e.g. from the slide reminder).
+function _schCommitSession(s, status, note){
+  if(!s) return;
+  if(!s._key) s._key = _schSessionKey(s);
   const ov = _schLoadOverrides();
   ov[s._key] = { status: status, note: note || '', at: new Date().toISOString() };
   _schSaveOverrides(ov);
   _schWriteStatus(s, status, note);   // dormant no-op until SCHEDULE_PA_WRITE_URL is set
+  // Gate: confirming TODAY's session (any terminal status) clears the begin lock.
+  if(_schIsTerminal(status) && s.date === _schTodayYMD()) _schSetCleared(true);
   // Reminder on every submitted activity (persistent callout lives on the card).
   const _verb = status === 'Confirmed' ? 'Confirmed' : status === 'No-show' ? 'No-show' : 'Call-off';
   showToast(_verb + ' — please update the OD & Tracker');
   _schRenderFromCache();
   renderNavSessionPill();   // current session now terminal → pill advances to next
+  _schApplyBeginGate();     // begin buttons may unlock now
+  renderSchedReminder();    // popover flips to the "cleared" state if open
 }
 
 // Server write-back. No-op (returns false) until the write flow is wired.
@@ -8896,10 +9115,10 @@ function _onLoginSuccessInner(){
     if(typeof refreshDeviceSetField === 'function'){
       setTimeout(() => refreshDeviceSetField(), 300);
     }
-    // ── Today's-session popup (Stage a) ──
-    // Fires only here (fresh moderator sign-in, non-admin). No-ops silently
-    // until SCHEDULE_PA_READ_URL is wired. Deferred so login UI settles first.
-    setTimeout(() => { try{ maybeShowTodaySessionPopup(); }catch(e){ console.warn(e); } }, 700);
+    // ── Schedule pill + begin-gate (Stage a) ──
+    // The slide reminder is fired ONCE after the Device Set is confirmed (see
+    // confirmInventorySet), NOT on login. Here we just load the pill data and
+    // sync the begin-gate so the buttons start in the correct locked state.
     setTimeout(() => { try{ _schLoadForNav(); }catch(e){ console.warn(e); } }, 750);
   }
   // ── Feedback inbox runs for ALL roles (admins included) ──
@@ -11520,6 +11739,12 @@ function renderModsCardView(mods, now, thirtyMinsAgo, showTeamStats){
 const prereqChecked = {1: false, 2: false};
 
 function openPrereqModal(){
+  // Gate: an unconfirmed scheduled session for today must be confirmed first.
+  if(typeof _schBeginLocked === 'function' && _schBeginLocked()){
+    if(typeof showToast === 'function') showToast('Confirm your upcoming session first');
+    if(typeof openSchedReminder === 'function') openSchedReminder();
+    return;
+  }
   // Reset state
   prereqChecked[1] = false;
   prereqChecked[2] = false;
@@ -11718,6 +11943,18 @@ function _doStartNewSession(){
   if(window.innerWidth <= 700){
     document.getElementById('sidebar').classList.remove('hidden');
     document.getElementById('main-panel').classList.add('hidden');
+  }
+  // Session finished → re-lock the begin gate and surface the NEXT scheduled
+  // session to confirm (refresh from cloud first to catch any newer status).
+  if(typeof _schSetCleared === 'function'){
+    _schSetCleared(false);
+    setTimeout(async () => {
+      try{
+        if(typeof _schLoadForNav === 'function') await _schLoadForNav();
+        if(typeof _schApplyBeginGate === 'function') _schApplyBeginGate();
+        if(typeof _schGateSession === 'function' && _schGateSession()) openSchedReminder();
+      }catch(_){}
+    }, 450);
   }
 }
 
@@ -13536,6 +13773,13 @@ async function confirmInventorySet(){
     if(typeof showToast === 'function') showToast('Equipment ' + inventorySelected.setName + ' confirmed ✓');
     // Refresh the active-set indicator on welcome screen
     if(typeof injectActiveSetIndicator === 'function') injectActiveSetIndicator();
+    // ── Initial schedule reminder — fire ONCE, after the Device Set is set ──
+    if(!sessionStorage.getItem('centific_sched_prompt_shown')){
+      sessionStorage.setItem('centific_sched_prompt_shown', '1');
+      if(typeof _schEnsureLoadedThenOpenReminder === 'function'){
+        setTimeout(() => { _schEnsureLoadedThenOpenReminder().catch(()=>{}); }, 450);
+      }
+    }
   } catch(err){
     console.error('[Inventory] Log error:', err);
     if(errEl) errEl.textContent = 'Submission failed: ' + (err.message || 'try again');
