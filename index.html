@@ -9313,6 +9313,7 @@ function doLogout(opts){
   if(!opts.auto && !confirm('Sign out of the app?')) return;
   clearAutoLogout();
   currentUser = null;
+  if(typeof _schResetCache === 'function') _schResetCache();   // wipe schedule state so it can't roam to the next user
   sessionStorage.removeItem('centific_user');
   if(typeof hideCollReminderFab === 'function') hideCollReminderFab();
   // Hide nav chip
@@ -10212,6 +10213,28 @@ let _schAdminAll = [];                 // parsed rows for all moderators (last f
 let _schAdminSelectedMod = null;       // canon key of the drilled-into moderator, or null = master
 const _schAdminFilter = { window: 'today', status: 'all', location: 'all', q: '' };  // from/to read from the inputs
 
+// Wipe all in-memory schedule state on sign-out. The page is NOT reloaded
+// between sign-ins, so without this the previous user's sessions keep rendering
+// (and "roaming" through the pill/reminder/My Schedule) until the next user's
+// data finishes loading. Local status overrides in localStorage are keyed by
+// moderator name, so they're left intact (they're the only record of unsynced
+// status changes until the PA write flow is wired) — they simply won't match
+// the next user's session keys.
+function _schResetCache(){
+  try{ _schPanelAll = []; }catch(_){}
+  try{ _schPanelSessions = []; }catch(_){}
+  try{ _schLogOverlay = {}; }catch(_){}
+  try{ _schAdminAll = []; }catch(_){}
+  try{ _schAdminSelectedMod = null; }catch(_){}
+  try{ _schAdminFilter.window='today'; _schAdminFilter.status='all'; _schAdminFilter.location='all'; _schAdminFilter.q=''; }catch(_){}
+  try{ sessionStorage.removeItem(_SCH_CLEARED_KEY); }catch(_){}
+  try{ sessionStorage.removeItem(_SCH_ACTIVE_KEY); }catch(_){}
+  try{ sessionStorage.removeItem('centific_sched_prompt_shown'); }catch(_){}
+  // Tear down the reminder popover and reset the nav pill so nothing lingers.
+  try{ const pop = document.getElementById('sched-reminder-pop'); if(pop) pop.remove(); }catch(_){}
+  try{ const pill = document.getElementById('nav-session-pill'); if(pill){ pill.classList.remove('has-session'); pill.innerHTML=''; } }catch(_){}
+}
+
 function gotoSchedAdmin(){
   if(!(currentUser && currentUser.isAdmin)) return;   // Scheduling is admin-only
   const al=_el('admin-landing'); if(al) al.classList.remove('visible');
@@ -10602,9 +10625,19 @@ async function dashSync(){
         syncEl.title = '';
       }
     }
-    populateModFilter(); renderDashboard();
-    if(currentTrackerPage === 'moderators') renderModeratorsPage();
-    if(currentTrackerPage === 'devices'){ window._devicesForceReload = true; loadDevices(); }
+    // Render only the ACTIVE sub-tab so its data paints immediately. Building
+    // the Dashboard's Chart.js charts is the expensive synchronous step — doing
+    // it unconditionally here used to block the Moderators list behind it. The
+    // inactive tab is rendered lazily by switchTrackerPage() when opened.
+    populateModFilter();
+    if(currentTrackerPage === 'moderators'){
+      renderModeratorsPage();
+    } else if(currentTrackerPage === 'devices'){
+      window._devicesForceReload = true; loadDevices();
+    } else {
+      renderDashboard();
+      setTimeout(()=>Object.values(dashCharts).forEach(c=>{try{c.resize();}catch(e){}}),100);
+    }
     showToast('Dashboard updated — '+dashData.length+' rows loaded');
   } catch(e){
     console.error('Dash sync error:', e);
