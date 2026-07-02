@@ -6302,6 +6302,13 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .dvup-simbadge{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;
   background:rgba(245,158,11,.15);color:var(--amber);border:.5px solid rgba(245,158,11,.35);
   border-radius:20px;padding:2px 8px;margin-left:6px}
+.dvup-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;
+  border:1px dashed var(--border-strong);border-radius:14px;padding:22px 16px;color:var(--text2);
+  background:var(--bg3);cursor:pointer;transition:border-color .18s,background .18s}
+.dvup-drop:hover{border-color:var(--pink);color:var(--text)}
+.dvup-drop.drag{border-color:var(--pink);background:rgba(239,67,179,.08);color:var(--text)}
+.dvup-drop i{font-size:24px;color:var(--text3)}
+.dvup-drop b{color:var(--text)}
 </style>
 </head>
 <body>
@@ -6741,7 +6748,7 @@ const TASK_VIDEOS = [
 ];
 
 // ── APP VERSION (searchable constant for version-poll notification) ──
-const APP_VERSION = "1.2.070126";
+const APP_VERSION = "1.2.070226";
 
 const TASKS=[
   {id:0,title:"Registration",cat:"Registration",distance:"",lux:"",duration:"",warn:"",note:"",isRegistration:true,steps:[]},
@@ -15364,43 +15371,50 @@ function openCollReminderForCurrent(){
 }
 
 /* =====================================================================
-   DEVICE A — CELLPHONE VIDEO UPLOAD (slide-down panel)
+   DEVICE A — CELLPHONE VIDEO UPLOAD (slide-down panel)  [Kilo-native flow]
    ---------------------------------------------------------------------
    Fires after Device A registration completes (see completeRegistrationLegacy).
-   Ports the naming/validation/key logic from cellphone_video_prep.py and
-   drives a 4-state flow: connect -> detect PID+video -> pull+upload -> done.
+   Everything happens inside Kilo — no external tool, no user workflow:
 
-   Two integration points are DORMANT until wired (Kilo dormant-until-wired
-   pattern). Both live behind adapters below:
-     _kiloAdbPull()  — WebUSB adb: read PID + pull the video off the phone
-     _kiloS3Put()    — HTTPS PUT of the pulled bytes to the Centific bucket
-   While KILO_UPLOAD_SIMULATE is true, both are FAKED so the whole flow can
-   be demoed/tested with no device and no backend. Flip to false + fill the
-   adapter bodies + paste KILO_S3_PRESIGN_ENDPOINT to go live.
+     Step 1  PID:   auto-detect via WebUSB adb (experimental) OR drag the
+                    <uuid>.js metadata file OR paste it. Confirmed PID is
+                    also written into the app's Participant ID field.
+     Step 2  Video: drag-and-drop the recording (or browse).
+     Step 3  Name:  pick the phone model -> filename becomes PID_Model.ext.
+     Step 4  Where: pick S3 location (LV / NYC / SEA) -> builds the S3 key.
+     Step 5  Upload -> S3, then a confirmation screen -> Complete upload.
+
+   Upload runs behind _kiloS3Put(). While KILO_UPLOAD_SIMULATE is true it is
+   FAKED (demo/test with no backend). To go live WITHOUT a server, set a
+   Cognito identity pool id; or set a presigned-URL endpoint. NEVER put a raw
+   AWS key here — this file is public on GitHub Pages.
    ===================================================================== */
-const KILO_UPLOAD_SIMULATE   = true;   // <- flip to false once adb + S3 are wired
-const KILO_S3_BUCKET         = 'centific-uploads';
-const KILO_S3_REGION         = 'us-east-2';
-// Endpoint that returns a presigned PUT URL for a given key (small Lambda/Function).
-// Empty = not configured; live upload no-ops with a clear message until pasted.
-const KILO_S3_PRESIGN_ENDPOINT = '';
+const KILO_UPLOAD_SIMULATE       = true;   // <- flip to false once a backend below is set
+const KILO_S3_BUCKET             = 'centific-uploads';
+const KILO_S3_REGION             = 'us-east-2';
+// Pick ONE upload backend (leave both empty = simulate only):
+const KILO_COGNITO_IDENTITY_POOL_ID = '';  // e.g. 'us-east-2:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' (no server code)
+const KILO_S3_PRESIGN_ENDPOINT      = '';  // e.g. Lambda Function URL returning {url} for a given {key}
+const KILO_WEBUSB_ENABLED           = true; // experimental in-browser adb PID detect (desktop Chrome/Edge)
 const KILO_S3_CONSOLE = 'https://' + KILO_S3_REGION + '.console.aws.amazon.com/s3/buckets/' + KILO_S3_BUCKET + '?region=' + KILO_S3_REGION;
 
-// Approved models + locations — kept in exact parity with the Python tool.
+// Runtime-built dynamic importer. Written via Function() so the QA parser
+// (new Function on each <script>) never sees a literal import() to choke on.
+var _dynImport = new Function('u', 'return import(u);');
+
+const UIMETA_DIR = '/sdcard/EdgeComputerVisionService/uimetadata';
 const DVUP_MODELS = ['MotoGPower2024','Redmi9A','SamsungGalaxyA03','SamsungGalaxyUltra2024',
   'GooglePixel8A','iPhone13','iPhone16Pro','GooglePixel9Pro','ASUSROG9Pro','NothingPhone','Other_Phone'];
 const DVUP_LOCATIONS = { LV:'LV-uploads', NYC:'NYC-uploads', SEA:'SEA-uploads' };
 const DVUP_KNOWN_EXTS = ['.mp4','.mov','.m4v'];
 const DVUP_PID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-// Live panel state.
 let _dvup = null;
 
 function _dvupTodayMMDD(){
   const d = new Date();
   return String(d.getMonth()+1).padStart(2,'0') + '.' + String(d.getDate()).padStart(2,'0');
 }
-// Ported from real_extension(): strip [n], then the LAST known container ext wins.
 function _dvupRealExt(filename){
   const name = String(filename||'').replace(/\[\d+\]/g,'').trim().toLowerCase();
   let bestPos=-1, bestExt=null;
@@ -15413,125 +15427,202 @@ function _dvupCleanPid(raw){
   if(pid.toLowerCase().endsWith('.json')) pid = pid.slice(0,-5);
   return pid;
 }
+// PID from a dropped metadata filename: strip a trailing extension (.js/.json/etc)
+// then validate the UUID shape. Handles 'e04c48f6-...-....js' and '....json'.
+function _dvupPidFromName(name){
+  const base = String(name||'').trim();
+  let cand = _dvupCleanPid(base.replace(/\.[A-Za-z0-9]+$/,''));
+  if(DVUP_PID_RE.test(cand)) return cand;
+  cand = _dvupCleanPid(base);
+  return DVUP_PID_RE.test(cand) ? cand : null;
+}
 function _dvupBuildKey(){
-  if(!_dvup) return '';
-  const ext = _dvupRealExt(_dvup.videoName);
+  if(!_dvup || !_dvup.pid) return '(pick a PID, model and location)';
+  const ext = _dvupRealExt(_dvup.videoName) || '.mp4';
   return DVUP_LOCATIONS[_dvup.loc] + '/' + _dvup.dateStr + '/' + _dvup.pid + '_' + _dvup.model + ext;
 }
+function _dvupMB(bytes){ return bytes ? (Math.round(bytes/1024/1024) + ' MB') : ''; }
 
-/* ---- Adapter 1: WebUSB adb — read PID + pull video --------------------
-   SIMULATE: fabricate a valid PID + a fake 214MB video, streaming progress.
-   LIVE (TODO): use @yume-chan/adb (ya-webadb) over @yume-chan/adb-daemon-webusb:
-     1. const device = await AdbDaemonWebUsbDeviceManager.BROWSER.requestDevice();
-     2. open the daemon transport, authenticate, wrap in Adb.
-     3. adb.subprocess.spawnAndWait('ls /sdcard/EdgeComputerVisionService/uimetadata')
-        -> parse the .json filename -> _dvupCleanPid()
-     4. adb.sync() -> read the recording path into a Blob (with progress).
-   Returns { pid, videoName, videoSize, blob }.                          */
-async function _kiloAdbPull(onProgress){
-  if(KILO_UPLOAD_SIMULATE){
-    const pid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
-              : '6ca70184-9309-0f46-b7f1-b56dec36516c';
-    const total = 214 * 1024 * 1024;
-    for(let p=0; p<=100; p+=8){ onProgress && onProgress(Math.min(p,100)); await _dvupSleep(70); }
-    return { pid, videoName: 'registration_' + _dvupTodayMMDD().replace('.','') + '.mp4',
-             videoSize: total, blob: null };
-  }
-  throw new Error('WebUSB adb not wired yet. Set KILO_UPLOAD_SIMULATE=false and implement _kiloAdbPull() with ya-webadb.');
+// Write the confirmed PID into the app's Participant ID field (g-participant).
+function _dvupApplyPidToApp(pid){
+  const f = document.getElementById('g-participant');
+  if(f){ f.value = pid; if(typeof syncGlobal === 'function'){ try { syncGlobal(); } catch(e){} } }
 }
 
-/* ---- Adapter 2: S3 PUT via presigned URL -----------------------------
-   SIMULATE: stream fake progress then resolve.
-   LIVE (TODO): POST {key} to KILO_S3_PRESIGN_ENDPOINT -> {url}; then
-     PUT the blob to that url (XHR for upload.onprogress). The AWS secret
-     lives ONLY in the issuer, never in this file.                        */
-async function _kiloS3Put(blob, key, onProgress){
+/* ---- Adapter 1: WebUSB adb — read the PID (experimental) --------------
+   Runs the SAME command the guide used to run by hand, in-browser, over
+   WebUSB. Desktop Chrome/Edge only; on Windows the phone's ADB interface
+   usually needs the WinUSB driver (Zadig) and must NOT be claimed by a
+   running adb server (scrcpy) at the same time. Any failure -> caller
+   falls back to the drag-metadata / manual PID methods.                  */
+async function _kiloWebusbPid(){
+  const AdbPkg = await _dynImport('https://esm.sh/@yume-chan/adb@2');
+  const UsbPkg = await _dynImport('https://esm.sh/@yume-chan/adb-daemon-webusb@2');
+  const CredPkg = await _dynImport('https://esm.sh/@yume-chan/adb-credential-web@2');
+  const mgr = UsbPkg.AdbDaemonWebUsbDeviceManager && UsbPkg.AdbDaemonWebUsbDeviceManager.BROWSER;
+  if(!mgr) throw new Error('WebUSB is not available in this browser (use desktop Chrome or Edge).');
+  const device = await mgr.requestDevice();
+  if(!device) throw new Error('No device was selected.');
+  const connection = await device.connect();
+  const credentialStore = new CredPkg.AdbWebCredentialStore('Kilo');
+  const transport = await AdbPkg.AdbDaemonTransport.authenticate({
+    serial: device.serial, connection, credentialStore
+  });
+  const adb = new AdbPkg.Adb(transport);
+  let out = '';
+  try {
+    out = await adb.subprocess.noneProtocol.spawnWaitText('ls ' + UIMETA_DIR);
+  } catch(e1){
+    // Older Tango API fallback.
+    const proc = await adb.subprocess.spawn('ls ' + UIMETA_DIR);
+    out = await new Response(proc.stdout).text();
+  }
+  try { await adb.close(); } catch(e2){}
+  const pids = [];
+  String(out).split(/[\s\r\n]+/).forEach(function(tok){
+    const p = _dvupPidFromName(tok);
+    if(p && pids.indexOf(p) === -1) pids.push(p);
+  });
+  if(!pids.length) throw new Error('No <PID>.js file found in ' + UIMETA_DIR + '.');
+  return pids[0];
+}
+
+/* ---- Adapter 2: upload the file to S3 --------------------------------
+   SIMULATE: fake progress. LIVE: Cognito (temporary scoped creds, no
+   server) or a presigned PUT URL. No long-lived key ever lives here.    */
+async function _kiloS3Put(file, key, onProgress){
   if(KILO_UPLOAD_SIMULATE){
     for(let p=0; p<=100; p+=10){ onProgress && onProgress(Math.min(p,100)); await _dvupSleep(90); }
     return { ok:true, key };
   }
-  if(!KILO_S3_PRESIGN_ENDPOINT){
-    throw new Error('No presigned-URL endpoint configured (KILO_S3_PRESIGN_ENDPOINT is empty).');
+  if(KILO_COGNITO_IDENTITY_POOL_ID){
+    const s3mod = await _dynImport('https://esm.sh/@aws-sdk/client-s3@3');
+    const credmod = await _dynImport('https://esm.sh/@aws-sdk/credential-providers@3');
+    const client = new s3mod.S3Client({
+      region: KILO_S3_REGION,
+      credentials: credmod.fromCognitoIdentityPool({
+        identityPoolId: KILO_COGNITO_IDENTITY_POOL_ID,
+        clientConfig: { region: KILO_S3_REGION }
+      })
+    });
+    await client.send(new s3mod.PutObjectCommand({
+      Bucket: KILO_S3_BUCKET, Key: key, Body: file, ContentType: file.type || 'video/mp4'
+    }));
+    onProgress && onProgress(100);
+    return { ok:true, key };
   }
-  throw new Error('Live S3 PUT not wired yet. Implement _kiloS3Put() against the presign endpoint.');
+  if(KILO_S3_PRESIGN_ENDPOINT){
+    const res = await fetch(KILO_S3_PRESIGN_ENDPOINT, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key: key })
+    });
+    if(!res.ok) throw new Error('Presign endpoint returned HTTP ' + res.status);
+    const url = (await res.json()).url;
+    await new Promise(function(resolve, reject){
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url);
+      xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+      xhr.upload.onprogress = function(e){ if(e.lengthComputable && onProgress) onProgress(Math.round(e.loaded/e.total*100)); };
+      xhr.onload = function(){ (xhr.status>=200 && xhr.status<300) ? resolve() : reject(new Error('S3 PUT HTTP ' + xhr.status)); };
+      xhr.onerror = function(){ reject(new Error('Network error during upload.')); };
+      xhr.send(file);
+    });
+    return { ok:true, key };
+  }
+  throw new Error('No upload backend configured (set a Cognito pool id or a presigned endpoint).');
 }
-function _dvupSleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function _dvupSleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
 
 /* ---- Panel open / close ---------------------------------------------- */
 function openDeviceAUploadPanel(){
-  _dvup = { phase:'connect', loc:'LV', dateStr:_dvupTodayMMDD(),
-            model:'GooglePixel8A', pid:'', videoName:'', videoSize:0, blob:null };
+  _dvup = { phase:'pid', pid:'', loc:'LV', dateStr:_dvupTodayMMDD(),
+            model:'GooglePixel8A', videoName:'', videoSize:0, file:null, busy:false, errMsg:'' };
   _dvupRender();
-  requestAnimationFrame(() => {
+  requestAnimationFrame(function(){
     document.getElementById('dvup-scrim').classList.add('open');
     document.getElementById('dvup-panel').classList.add('open');
   });
   document.body.style.overflow = 'hidden';
 }
-// complete=true  -> hand off to the normal registration-complete path (advance to Task 01)
-// complete=false -> user bailed; leave Registration INCOMPLETE so they can retry
 function closeDeviceAUploadPanel(complete){
   document.getElementById('dvup-scrim').classList.remove('open');
   document.getElementById('dvup-panel').classList.remove('open');
   document.body.style.overflow = '';
-  const finish = () => {
+  setTimeout(function(){
     if(complete){
       if(typeof confirmReviewedAndUploaded === 'function') confirmReviewedAndUploaded();
     } else {
       pendingCompleteIdx = -1; pendingRegistrationComplete = false;
     }
     _dvup = null;
-  };
-  setTimeout(finish, 430); // after slide-close transition
+  }, 430);
 }
 
-/* ---- Render (full rebuild only on phase change) ---------------------- */
+/* ---- Render ----------------------------------------------------------- */
+function _dvupHead(){
+  const sim = KILO_UPLOAD_SIMULATE ? '<span class="dvup-simbadge">Simulated upload</span>' : '';
+  return '<div class="dvup-head"><div class="dvup-title"><i class="ti ti-cloud-upload" aria-hidden="true"></i>Cellphone video upload' + sim + '</div>'
+    + '<button class="dvup-x" aria-label="Close" onclick="closeDeviceAUploadPanel(false)">&times;</button></div>';
+}
 function _dvupRender(){
   if(!_dvup) return;
   const el = document.getElementById('dvup-content');
-  const simBadge = KILO_UPLOAD_SIMULATE ? '<span class="dvup-simbadge">Simulated</span>' : '';
-  const head = '<div class="dvup-head"><div class="dvup-title"><i class="ti ti-cloud-upload" aria-hidden="true"></i>Cellphone video upload' + simBadge + '</div>'
-    + '<button class="dvup-x" aria-label="Close" onclick="closeDeviceAUploadPanel(false)">&times;</button></div>';
 
-  if(_dvup.phase === 'connect'){
-    el.innerHTML = head
-      + '<div class="dvup-conn warn"><i class="ti ti-usb dvup-conn-ico" aria-hidden="true"></i>'
-      + '<div class="dvup-conn-main"><div class="dvup-conn-t">No device connected</div>'
-      + '<div class="dvup-conn-s">Plug in the phone (USB debugging on), then connect</div></div></div>'
-      + '<div class="dvup-note">The app reads the PID and pulls the recording directly from the phone over USB.</div>'
-      + '<div class="dvup-actions"><button class="dvup-btn primary" onclick="_dvupConnect()"><i class="ti ti-usb" aria-hidden="true"></i> Connect device</button></div>';
+  if(_dvup.phase === 'pid'){
+    let body = _dvupHead() + '<div class="dvup-lab">Step 1 · Participant ID</div>';
+    if(_dvup.pid){
+      body += '<div class="dvup-box"><div class="dvup-detected"><i class="ti ti-check" aria-hidden="true"></i> PID set</div>'
+        + '<div class="dvup-mono">' + _dvup.pid + '</div>'
+        + '<div class="dvup-note" style="cursor:pointer;color:var(--pink)" onclick="_dvupPidClear()">Change</div></div>'
+        + '<div class="dvup-actions"><button class="dvup-btn primary" onclick="_dvupPidContinue()">Continue <i class="ti ti-arrow-right" aria-hidden="true"></i></button></div>';
+    } else {
+      body += (KILO_WEBUSB_ENABLED
+        ? '<button class="dvup-btn primary" style="width:100%;justify-content:center;margin-bottom:12px" onclick="_dvupWebusb()"><i class="ti ti-usb" aria-hidden="true"></i> Detect from device (USB · experimental)</button>'
+        : '');
+      body += '<div class="dvup-drop" id="dvup-pid-drop" ondragover="_dvupDragOver(event,this)" ondragleave="_dvupDragLeave(this)" ondrop="_dvupPidDrop(event,this)" onclick="document.getElementById(\'dvup-pid-file\').click()">'
+        + '<i class="ti ti-file-text" aria-hidden="true"></i><div>Drag the <b>&lt;PID&gt;.js</b> metadata file here</div>'
+        + '<div class="dvup-note">from Device A: /sdcard/EdgeComputerVisionService/uimetadata</div></div>'
+        + '<input type="file" id="dvup-pid-file" accept=".js,.json" style="display:none" onchange="_dvupPidFile(this)"/>'
+        + '<div class="dvup-lab" style="margin-top:14px">Or paste the PID</div>'
+        + '<div style="display:flex;gap:8px"><input class="dvup-field" id="dvup-pid-manual" placeholder="e04c48f6-1d0a-bb04-3741-7b0c4f6d6e06"/>'
+        + '<button class="dvup-btn ghost" onclick="_dvupPidUse()">Use</button></div>'
+        + (_dvup.errMsg ? '<div class="dvup-note" style="color:var(--red)">' + _dvup.errMsg + '</div>' : '');
+    }
+    el.innerHTML = body;
     return;
   }
 
-  if(_dvup.phase === 'detected'){
-    el.innerHTML = head
-      + _dvupConnBanner()
-      + '<div class="dvup-grid">'
-      +   '<div>'
-      +     '<div class="dvup-lab">Detected on device</div>'
-      +     '<div class="dvup-box"><div class="dvup-detected"><i class="ti ti-check" aria-hidden="true"></i> PID + video auto-detected</div>'
-      +       '<div class="dvup-mono">' + _dvup.pid + '</div>'
-      +       '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;border-top:.5px solid var(--border);font-size:11.5px;color:var(--text2)">'
-      +       '<i class="ti ti-video" aria-hidden="true"></i>' + _dvup.videoName + ' &middot; ' + _dvupMB(_dvup.videoSize) + '</div></div>'
-      +     '<div class="dvup-note">Video streamed over adb — no manual file selection</div>'
-      +   '</div>'
-      +   '<div>'
-      +     '<div class="dvup-lab">Location</div><div class="dvup-locrow" id="dvup-locrow">' + _dvupLocChips() + '</div>'
-      +     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">'
-      +       '<div><div class="dvup-lab">Date</div><input class="dvup-field" id="dvup-date" value="' + _dvup.dateStr + '" oninput="_dvupDateInput(this.value)"/></div>'
-      +       '<div><div class="dvup-lab">Model</div>' + _dvupModelSelect() + '</div>'
-      +     '</div>'
-      +     '<div class="dvup-lab">S3 key preview</div><div class="dvup-key" id="dvup-key">' + _dvupBuildKey() + '</div>'
-      +   '</div>'
-      + '</div>'
-      + '<div class="dvup-actions"><button class="dvup-btn ghost" onclick="_dvupConnect()">Re-scan device</button>'
-      + '<button class="dvup-btn primary" onclick="_dvupRunPullUpload()"><i class="ti ti-cloud-upload" aria-hidden="true"></i> Pull + upload</button></div>';
+  if(_dvup.phase === 'video'){
+    let body = _dvupHead()
+      + '<div class="dvup-conn ok"><i class="ti ti-id dvup-conn-ico" aria-hidden="true"></i>'
+      + '<div class="dvup-conn-main"><div class="dvup-conn-t">PID ' + _dvup.pid + '</div>'
+      + '<div class="dvup-conn-s">written to the Participant ID field</div></div></div>'
+      + '<div class="dvup-lab">Step 2 · Session video</div>';
+    if(!_dvup.file){
+      body += '<div class="dvup-drop" id="dvup-vid-drop" ondragover="_dvupDragOver(event,this)" ondragleave="_dvupDragLeave(this)" ondrop="_dvupVidDrop(event,this)" onclick="document.getElementById(\'dvup-vid-file\').click()">'
+        + '<i class="ti ti-video" aria-hidden="true"></i><div>Drag the recording here, or click to browse</div>'
+        + '<div class="dvup-note">.mp4 / .mov / .m4v — iPhone .MOV is kept as-is</div></div>'
+        + '<input type="file" id="dvup-vid-file" accept="video/*,.mp4,.mov,.m4v" style="display:none" onchange="_dvupVidFile(this)"/>';
+    } else {
+      body += '<div class="dvup-box"><div style="display:flex;align-items:center;gap:8px"><i class="ti ti-video" style="color:var(--pink)" aria-hidden="true"></i>'
+        + '<span style="flex:1;font-size:12.5px;color:var(--text)">' + _dvupEsc(_dvup.videoName) + '</span>'
+        + '<span style="font-size:11.5px;color:var(--text2)">' + _dvupMB(_dvup.videoSize) + '</span>'
+        + '<span style="color:var(--text3);cursor:pointer" onclick="_dvupVidClear()"><i class="ti ti-x" aria-hidden="true"></i></span></div></div>'
+        + '<div class="dvup-grid" style="margin-top:14px">'
+        +   '<div><div class="dvup-lab">Step 3 · Phone model</div>' + _dvupModelSelect()
+        +     '<div class="dvup-lab" style="margin-top:14px">Date</div><input class="dvup-field" id="dvup-date" value="' + _dvup.dateStr + '" oninput="_dvupDateInput(this.value)"/></div>'
+        +   '<div><div class="dvup-lab">Step 4 · S3 location</div><div class="dvup-locrow" id="dvup-locrow">' + _dvupLocChips() + '</div>'
+        +     '<div class="dvup-lab">Uploads as</div><div class="dvup-key" id="dvup-key">' + _dvupBuildKey() + '</div></div>'
+        + '</div>'
+        + '<div class="dvup-actions"><button class="dvup-btn ghost" onclick="_dvupPidClear2()">Back</button>'
+        + '<button class="dvup-btn primary" onclick="_dvupUpload()"><i class="ti ti-cloud-upload" aria-hidden="true"></i> Upload to S3</button></div>';
+    }
+    el.innerHTML = body;
     return;
   }
 
   if(_dvup.phase === 'working'){
-    el.innerHTML = head + _dvupConnBanner()
-      + '<div class="dvup-box"><div class="dvup-lab" id="dvup-prog-label" style="margin-bottom:6px">Pulling from device…</div>'
+    el.innerHTML = _dvupHead()
+      + '<div class="dvup-box"><div class="dvup-lab" id="dvup-prog-label" style="margin-bottom:6px">Uploading to S3…</div>'
       + '<div class="dvup-mono" style="font-size:11.5px;color:var(--text2)">' + _dvupBuildKey() + '</div>'
       + '<div class="dvup-prog"><div class="dvup-prog-fill" id="dvup-prog-fill"></div></div>'
       + '<div class="dvup-note" id="dvup-prog-pct">0%</div></div>';
@@ -15540,7 +15631,7 @@ function _dvupRender(){
 
   if(_dvup.phase === 'done'){
     const key = _dvupBuildKey();
-    el.innerHTML = head
+    el.innerHTML = _dvupHead()
       + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><div class="dvup-ok-ico"><i class="ti ti-check" aria-hidden="true"></i></div>'
       + '<div style="font-size:15px;font-weight:600;letter-spacing:-.02em;color:var(--text)">Upload complete</div></div>'
       + '<div class="dvup-lab">Uploaded to S3 — verify before continuing</div>'
@@ -15548,7 +15639,7 @@ function _dvupRender(){
       + '<span style="font-size:11px;color:var(--text3)">s3://' + KILO_S3_BUCKET + '/</span></div>'
       + '<div class="dvup-mono">' + key + '</div>'
       + '<div style="display:flex;align-items:center;gap:16px;margin-top:10px;padding-top:10px;border-top:.5px solid var(--border);font-size:11.5px;color:var(--text2);flex-wrap:wrap">'
-      + '<span><i class="ti ti-check" style="color:var(--green)" aria-hidden="true"></i> ' + _dvupMB(_dvup.videoSize) + ' transferred</span>'
+      + '<span><i class="ti ti-check" style="color:var(--green)" aria-hidden="true"></i> ' + _dvupMB(_dvup.videoSize) + '</span>'
       + '<span style="color:var(--pink);cursor:pointer" onclick="_dvupCopyKey()"><i class="ti ti-copy" aria-hidden="true"></i> Copy key</span>'
       + '<a href="' + KILO_S3_CONSOLE + '" style="color:var(--pink);text-decoration:none"><i class="ti ti-external-link" aria-hidden="true"></i> Open in console</a></div></div>'
       + '<div class="dvup-actions"><button class="dvup-btn ghost" onclick="_dvupAnother()">Upload another</button>'
@@ -15557,74 +15648,94 @@ function _dvupRender(){
   }
 
   if(_dvup.phase === 'error'){
-    el.innerHTML = head + _dvupConnBanner()
+    el.innerHTML = _dvupHead()
       + '<div class="dvup-box" style="border-color:rgba(239,68,68,.4)"><div class="dvup-lab" style="color:var(--red)">Upload could not complete</div>'
-      + '<div style="font-size:12.5px;color:var(--text2);line-height:1.5">' + (_dvup.errMsg||'Unknown error') + '</div></div>'
+      + '<div style="font-size:12.5px;color:var(--text2);line-height:1.5">' + _dvupEsc(_dvup.errMsg||'Unknown error') + '</div></div>'
       + '<div class="dvup-actions"><button class="dvup-btn ghost" onclick="closeDeviceAUploadPanel(false)">Close</button>'
-      + '<button class="dvup-btn primary" onclick="_dvupRunPullUpload()">Retry</button></div>';
+      + '<button class="dvup-btn primary" onclick="_dvupUpload()">Retry</button></div>';
     return;
   }
 }
-function _dvupConnBanner(){
-  return '<div class="dvup-conn ok"><i class="ti ti-device-mobile-check dvup-conn-ico" aria-hidden="true"></i>'
-    + '<div class="dvup-conn-main"><div class="dvup-conn-t">Device connected</div>'
-    + '<div class="dvup-conn-s">Authorized &middot; adb ready</div></div></div>';
-}
+function _dvupEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function _dvupLocChips(){
-  return Object.keys(DVUP_LOCATIONS).map(k =>
-    '<span class="dvup-chip' + (k===_dvup.loc?' sel':'') + '" onclick="_dvupSetLoc(\'' + k + '\')">' + k + '</span>').join('');
+  return Object.keys(DVUP_LOCATIONS).map(function(k){
+    return '<span class="dvup-chip' + (k===_dvup.loc?' sel':'') + '" onclick="_dvupSetLoc(\'' + k + '\')">' + k + '</span>';
+  }).join('');
 }
 function _dvupModelSelect(){
   return '<select class="dvup-field" onchange="_dvupSetModel(this.value)">'
-    + DVUP_MODELS.map(m => '<option' + (m===_dvup.model?' selected':'') + '>' + m + '</option>').join('') + '</select>';
+    + DVUP_MODELS.map(function(m){ return '<option' + (m===_dvup.model?' selected':'') + '>' + m + '</option>'; }).join('') + '</select>';
 }
-function _dvupMB(bytes){ return Math.round(bytes/1024/1024) + ' MB'; }
 
-/* ---- Targeted updates (avoid full rebuild while the date field is focused) ---- */
-function _dvupSetLoc(k){
-  _dvup.loc = k;
-  const row = document.getElementById('dvup-locrow');
-  if(row) row.innerHTML = _dvupLocChips();
-  _dvupRefreshKey();
-}
-function _dvupSetModel(m){ _dvup.model = m; _dvupRefreshKey(); }
-function _dvupDateInput(v){ _dvup.dateStr = String(v).trim(); _dvupRefreshKey(); }
-function _dvupRefreshKey(){ const k = document.getElementById('dvup-key'); if(k) k.textContent = _dvupBuildKey(); }
-
-/* ---- Flow steps ------------------------------------------------------- */
-async function _dvupConnect(){
+/* ---- PID capture ------------------------------------------------------ */
+async function _dvupWebusb(){
+  _dvup.errMsg = 'Requesting device… approve the USB prompt (and the phone prompt).';
+  _dvupRender();
   try {
-    const res = await _kiloAdbPull(() => {}); // simulate connect+detect in one step
-    _dvup.pid = res.pid; _dvup.videoName = res.videoName;
-    _dvup.videoSize = res.videoSize; _dvup.blob = res.blob;
-    _dvup.phase = 'detected';
-  } catch(e){ _dvup.phase = 'error'; _dvup.errMsg = e.message; }
+    const pid = await _kiloWebusbPid();
+    _dvup.pid = pid; _dvup.errMsg = '';
+  } catch(e){
+    _dvup.errMsg = 'USB detect failed: ' + e.message + ' — drag the .js file or paste the PID instead.';
+  }
   _dvupRender();
 }
-async function _dvupRunPullUpload(){
-  if(!DVUP_PID_RE.test(_dvup.pid)){
-    if(typeof showToast === 'function') showToast('Detected PID is not valid — re-scan the device');
-    return;
-  }
-  _dvup.phase = 'working'; _dvupRender();
-  const setProg = (label, pct) => {
-    const l = document.getElementById('dvup-prog-label'); if(l) l.textContent = label;
-    const f = document.getElementById('dvup-prog-fill'); if(f) f.style.width = pct + '%';
-    const p = document.getElementById('dvup-prog-pct'); if(p) p.textContent = pct + '%';
+function _dvupPidFile(inp){ if(inp.files && inp.files[0]) _dvupPidFromFileObj(inp.files[0]); }
+function _dvupPidDrop(ev, zone){ ev.preventDefault(); _dvupDragLeave(zone); const f = ev.dataTransfer.files && ev.dataTransfer.files[0]; if(f) _dvupPidFromFileObj(f); }
+function _dvupPidFromFileObj(f){
+  const pid = _dvupPidFromName(f.name);
+  if(pid){ _dvup.pid = pid; _dvup.errMsg = ''; }
+  else { _dvup.errMsg = 'That filename is not a PID. Drop the <uuid>.js metadata file.'; }
+  _dvupRender();
+}
+function _dvupPidUse(){
+  const v = document.getElementById('dvup-pid-manual');
+  const pid = _dvupCleanPid(v ? v.value : '');
+  if(DVUP_PID_RE.test(pid)){ _dvup.pid = pid; _dvup.errMsg = ''; }
+  else { _dvup.errMsg = 'That is not a valid PID (expected a UUID).'; }
+  _dvupRender();
+}
+function _dvupPidClear(){ _dvup.pid=''; _dvup.errMsg=''; _dvupRender(); }
+function _dvupPidClear2(){ _dvup.phase='pid'; _dvupRender(); }
+function _dvupPidContinue(){
+  if(!DVUP_PID_RE.test(_dvup.pid)) return;
+  _dvupApplyPidToApp(_dvup.pid);
+  _dvup.phase = 'video'; _dvupRender();
+}
+
+/* ---- video capture ---------------------------------------------------- */
+function _dvupVidFile(inp){ if(inp.files && inp.files[0]) _dvupSetVideo(inp.files[0]); }
+function _dvupVidDrop(ev, zone){ ev.preventDefault(); _dvupDragLeave(zone); const f = ev.dataTransfer.files && ev.dataTransfer.files[0]; if(f) _dvupSetVideo(f); }
+function _dvupSetVideo(f){ _dvup.file=f; _dvup.videoName=f.name; _dvup.videoSize=f.size||0; _dvupRender(); }
+function _dvupVidClear(){ _dvup.file=null; _dvup.videoName=''; _dvup.videoSize=0; _dvupRender(); }
+function _dvupDragOver(ev, zone){ ev.preventDefault(); zone.classList.add('drag'); }
+function _dvupDragLeave(zone){ zone.classList.remove('drag'); }
+
+/* ---- targeted updates (no full rebuild while the date field is focused) ---- */
+function _dvupSetLoc(k){ _dvup.loc=k; const row=document.getElementById('dvup-locrow'); if(row) row.innerHTML=_dvupLocChips(); _dvupRefreshKey(); }
+function _dvupSetModel(m){ _dvup.model=m; _dvupRefreshKey(); }
+function _dvupDateInput(v){ _dvup.dateStr=String(v).trim(); _dvupRefreshKey(); }
+function _dvupRefreshKey(){ const k=document.getElementById('dvup-key'); if(k) k.textContent=_dvupBuildKey(); }
+
+/* ---- upload ----------------------------------------------------------- */
+async function _dvupUpload(){
+  if(!_dvup.file){ if(typeof showToast==='function') showToast('Drop the video first'); return; }
+  if(!DVUP_PID_RE.test(_dvup.pid)){ if(typeof showToast==='function') showToast('PID is not valid'); return; }
+  _dvup.phase='working'; _dvupRender();
+  const setProg = function(pct){
+    const f=document.getElementById('dvup-prog-fill'); if(f) f.style.width=pct+'%';
+    const p=document.getElementById('dvup-prog-pct'); if(p) p.textContent=pct+'%';
   };
   try {
-    const pulled = await _kiloAdbPull(pct => setProg('Pulling from device…', pct));
-    _dvup.pid = _dvup.pid || pulled.pid; _dvup.blob = pulled.blob;
-    await _kiloS3Put(_dvup.blob, _dvupBuildKey(), pct => setProg('Uploading to S3…', pct));
-    _dvup.phase = 'done';
-  } catch(e){ _dvup.phase = 'error'; _dvup.errMsg = e.message; }
+    await _kiloS3Put(_dvup.file, _dvupBuildKey(), setProg);
+    _dvup.phase='done';
+  } catch(e){ _dvup.phase='error'; _dvup.errMsg=e.message; }
   _dvupRender();
 }
-function _dvupAnother(){ _dvup.phase = 'detected'; _dvupRender(); }
+function _dvupAnother(){ _dvup.file=null; _dvup.videoName=''; _dvup.videoSize=0; _dvup.phase='video'; _dvupRender(); }
 function _dvupCopyKey(){
-  const k = _dvupBuildKey();
-  if(navigator.clipboard) navigator.clipboard.writeText('s3://' + KILO_S3_BUCKET + '/' + k).catch(()=>{});
-  if(typeof showToast === 'function') showToast('S3 key copied');
+  const k=_dvupBuildKey();
+  if(navigator.clipboard) navigator.clipboard.writeText('s3://' + KILO_S3_BUCKET + '/' + k).catch(function(){});
+  if(typeof showToast==='function') showToast('S3 key copied');
 }
 </script>
 
