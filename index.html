@@ -15456,10 +15456,19 @@ function _dvupApplyPidToApp(pid){
    running adb server (scrcpy) at the same time. Any failure -> caller
    falls back to the drag-metadata / manual PID methods.                  */
 async function _kiloWebusbPid(){
-  const AdbPkg = await _dynImport('https://esm.sh/@yume-chan/adb@2');
-  const UsbPkg = await _dynImport('https://esm.sh/@yume-chan/adb-daemon-webusb@2');
-  const CredPkg = await _dynImport('https://esm.sh/@yume-chan/adb-credential-web@2');
-  const mgr = UsbPkg.AdbDaemonWebUsbDeviceManager && UsbPkg.AdbDaemonWebUsbDeviceManager.BROWSER;
+  const AdbPkg = await _dynImport('https://esm.sh/@yume-chan/adb@2.6.0');
+  const UsbPkg = await _dynImport('https://esm.sh/@yume-chan/adb-daemon-webusb@2.3.2?deps=@yume-chan/adb@2.6.0');
+  const CredPkg = await _dynImport('https://esm.sh/@yume-chan/adb-credential-web@2.1.0');
+  // Resolve constructors whether exposed as named or default exports.
+  // (AdbWebCredentialStore is a DEFAULT export — that was the "is not a constructor" bug.)
+  const Manager = UsbPkg.AdbDaemonWebUsbDeviceManager || (UsbPkg.default && UsbPkg.default.AdbDaemonWebUsbDeviceManager);
+  const Transport = AdbPkg.AdbDaemonTransport || (AdbPkg.default && AdbPkg.default.AdbDaemonTransport);
+  const AdbCtor = AdbPkg.Adb || (AdbPkg.default && AdbPkg.default.Adb);
+  const CredCtor = CredPkg.AdbWebCredentialStore || CredPkg.default || (CredPkg.default && CredPkg.default.AdbWebCredentialStore);
+  if(typeof CredCtor !== 'function' || !Transport || !AdbCtor){
+    throw new Error('adb library exports not found (version/API mismatch).');
+  }
+  const mgr = Manager && Manager.BROWSER;
   if(!mgr) throw new Error('WebUSB is not available in this browser (use desktop Chrome or Edge).');
   // Reuse a previously authorized device if present (skips a re-prompt); else ask.
   let device = null;
@@ -15482,11 +15491,11 @@ async function _kiloWebusbPid(){
     }
     throw ec;
   }
-  const credentialStore = new CredPkg.AdbWebCredentialStore('Kilo');
-  const transport = await AdbPkg.AdbDaemonTransport.authenticate({
+  const credentialStore = new CredCtor('Kilo');
+  const transport = await Transport.authenticate({
     serial: device.serial, connection, credentialStore
   });
-  const adb = new AdbPkg.Adb(transport);
+  const adb = new AdbCtor(transport);
   let out = '';
   try {
     out = await adb.subprocess.noneProtocol.spawnWaitText('ls ' + UIMETA_DIR);
