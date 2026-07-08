@@ -6748,7 +6748,7 @@ const TASK_VIDEOS = [
 ];
 
 // ── APP VERSION (searchable constant for version-poll notification) ──
-const APP_VERSION = "1.2.070226";
+const APP_VERSION = "1.2.070826";
 
 const TASKS=[
   {id:0,title:"Registration",cat:"Registration",distance:"",lux:"",duration:"",warn:"",note:"",isRegistration:true,steps:[]},
@@ -15461,9 +15461,27 @@ async function _kiloWebusbPid(){
   const CredPkg = await _dynImport('https://esm.sh/@yume-chan/adb-credential-web@2');
   const mgr = UsbPkg.AdbDaemonWebUsbDeviceManager && UsbPkg.AdbDaemonWebUsbDeviceManager.BROWSER;
   if(!mgr) throw new Error('WebUSB is not available in this browser (use desktop Chrome or Edge).');
-  const device = await mgr.requestDevice();
+  // Reuse a previously authorized device if present (skips a re-prompt); else ask.
+  let device = null;
+  try { const granted = await mgr.getDevices(); if(granted && granted.length) device = granted[0]; } catch(eg){}
+  if(!device) device = await mgr.requestDevice();
   if(!device) throw new Error('No device was selected.');
-  const connection = await device.connect();
+  let connection;
+  try {
+    connection = await device.connect();
+  } catch(ec){
+    // The #1 cause: an adb server (scrcpy / Android Studio / a stray adb.exe) already
+    // holds the device's USB interface, so WebUSB can't claim it. Can't be forced from
+    // the browser — the other process must release the device first.
+    const m = String((ec && ec.message) || ec).toLowerCase();
+    if(m.indexOf('claim') !== -1 || m.indexOf('in use') !== -1 || m.indexOf('access') !== -1
+       || m.indexOf('busy') !== -1 || m.indexOf('open') !== -1){
+      throw new Error('The device is held by a running adb server (scrcpy / Android Studio). '
+        + 'WebUSB can\'t share the device with adb — close scrcpy, run "adb kill-server" '
+        + '(and end any adb.exe in Task Manager), unplug/replug the phone, then retry.');
+    }
+    throw ec;
+  }
   const credentialStore = new CredPkg.AdbWebCredentialStore('Kilo');
   const transport = await AdbPkg.AdbDaemonTransport.authenticate({
     serial: device.serial, connection, credentialStore
